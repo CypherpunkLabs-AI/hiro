@@ -1,5 +1,30 @@
 name: Deploy locked stack to Phala
 on:
+  workflow_call:
+    inputs:
+      proxy_run:
+        required: false
+        type: string
+      os_image:
+        required: true
+        type: string
+      instance_type:
+        required: true
+        type: string
+      region:
+        required: true
+        type: string
+      cli_version:
+        required: true
+        type: string
+      cvm_id:
+        required: false
+        type: string
+    secrets:
+      PHALA_CLOUD_API_KEY:
+        required: true
+      HIRO_RUNTIME_ENV:
+        required: true
   workflow_dispatch:
     inputs:
       proxy_run:
@@ -42,6 +67,23 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:
           persist-credentials: false
+      - name: Check deployment settings
+        env:
+          PHALA_OS_IMAGE: ${{ inputs.os_image }}
+          PHALA_INSTANCE_TYPE: ${{ inputs.instance_type }}
+          PHALA_REGION: ${{ inputs.region }}
+          PHALA_CLI_VERSION: ${{ inputs.cli_version }}
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          HIRO_RUNTIME_ENV: ${{ secrets.HIRO_RUNTIME_ENV }}
+        run: |
+          python3 - <<'PY'
+          import os
+          names = ("PHALA_OS_IMAGE", "PHALA_INSTANCE_TYPE", "PHALA_REGION",
+                   "PHALA_CLI_VERSION", "PHALA_CLOUD_API_KEY", "HIRO_RUNTIME_ENV")
+          missing = [name for name in names if not os.environ.get(name, "").strip()]
+          if missing:
+              raise SystemExit("Deployment settings unavailable to this job: " + ", ".join(missing))
+          PY
       - name: Install pinned deployment tools
         env:
           CLI_VERSION: ${{ inputs.cli_version }}

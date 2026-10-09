@@ -131,7 +131,9 @@ installed CLI version. Remove `--check` to call `phala deploy`. Add
 explicit OS image, `--no-dev-os`, `--no-public-logs`, `--no-public-sysinfo` and
 `--wait`, following the [official CLI contract](https://docs.phala.com/phala-cloud/phala-cloud-cli/deploy).
 
-The manual `deploy.yml` workflow imports and verifies the selected successful proxy CI image before invoking the same command. An empty `proxy_run` input selects the latest successful main-branch push. It checks all remaining bootstrap inputs together before provisioning. Configure GitHub secrets
+`validate.yml` calls `deploy.yml` after successful validation on every push to `main`. Pull requests only validate. The same deployment workflow remains manually dispatchable. Automatic runs obtain `PHALA_OS_IMAGE`, `PHALA_INSTANCE_TYPE`, `PHALA_REGION` and optional `PHALA_CVM_ID` from GitHub repository or organization variables; `PHALA_CLI_VERSION` defaults to the tested `1.1.22`. Secrets are inherited by the deployment job.
+
+The `deploy.yml` workflow imports and verifies the selected successful proxy CI image before invoking the same command. An empty `proxy_run` input selects the latest successful main-branch push. It checks all remaining bootstrap inputs together before provisioning. Configure GitHub secrets
 `PHALA_CLOUD_API_KEY` and `HIRO_RUNTIME_ENV` (the application env file contents),
 then supply the OS image, instance, region and CLI version in the dispatch form.
 Deployment runs are serialized. Runtime secrets are stored only in a temporary

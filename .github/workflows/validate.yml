@@ -1,13 +1,15 @@
-name: Validate configuration
+name: Validate and deploy
 on:
   pull_request:
   push:
     branches: [main]
 permissions:
   contents: read
+  packages: read
+  attestations: read
 concurrency:
   group: validate-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   validate:
     runs-on: ubuntu-24.04
@@ -23,3 +25,14 @@ jobs:
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Validate repository configuration
         run: scripts/validate
+  deploy:
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      os_image: ${{ vars.PHALA_OS_IMAGE }}
+      instance_type: ${{ vars.PHALA_INSTANCE_TYPE }}
+      region: ${{ vars.PHALA_REGION }}
+      cli_version: ${{ vars.PHALA_CLI_VERSION || '1.1.22' }}
+      cvm_id: ${{ vars.PHALA_CVM_ID }}
+    secrets: inherit
