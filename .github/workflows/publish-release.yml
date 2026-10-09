@@ -49,6 +49,8 @@ jobs:
           python3 -m venv .venv
           .venv/bin/python -m pip install -r scripts/requirements.txt
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Check UEFI firmware and QEMU before building
+        run: nix develop --command python3 scripts/check-image-boot --preflight
       - name: Import and verify the proxy build
         env:
           PROXY_RUN: ${{ inputs.proxy_run }}
@@ -117,6 +119,7 @@ jobs:
           name: image-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             dist/boot.log
+            dist/boot-preflight.log
             dist/boot-check.json
             dist/publish/*.json
             dist/image/*.manifest

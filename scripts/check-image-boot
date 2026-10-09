@@ -1,59 +1,112 @@
 #!/usr/bin/env python3
 """Boot the release disk under UEFI; missing TDX must never attest."""
+import argparse
 import json
 import os
+from pathlib import Path
+import shutil
 import socket
 import subprocess
+import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 from hiro import ROOT, require
 
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--preflight', action='store_true', help='Check QEMU and firmware without building a disk')
+args = parser.parse_args()
 dist = ROOT / 'dist'
-with socket.socket() as s:
-    s.bind(('127.0.0.1', 0))
-    port = s.getsockname()[1]
-command = ['qemu-system-x86_64', '-machine', 'q35', '-m', '6144', '-smp', '2',
-           '-bios', os.environ['HIRO_OVMF'], '-drive', f'file={dist}/image/hiro.raw,format=raw,if=virtio,snapshot=on',
-           '-netdev', f'user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:8080',
-           '-device', 'virtio-net-pci,netdev=net0', '-display', 'none', '-monitor', 'none', '-serial', 'stdio']
-if os.access('/dev/kvm', os.R_OK | os.W_OK):
-    command += ['-accel', 'kvm', '-cpu', 'host']
-else:
-    command += ['-accel', 'tcg', '-cpu', 'max']
-def status(path):
+dist.mkdir(exist_ok=True)
+log_path = dist / ('boot-preflight.log' if args.preflight else 'boot.log')
+
+
+def status(port, path):
     try:
         with urllib.request.urlopen(f'http://127.0.0.1:{port}' + path, timeout=3) as response:
             return response.status
     except urllib.error.HTTPError as error:
         return error.code
-with (dist / 'boot.log').open('wb') as log:
-    vm = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
-    try:
-        deadline = time.monotonic() + 420
-        while time.monotonic() < deadline:
-            require(vm.poll() is None, 'UEFI guest exited; see boot.log')
-            try:
-                if status('/health') == 200:
-                    break
-            except (OSError, TimeoutError):
-                pass
-            time.sleep(3)
+
+
+def boot():
+    with tempfile.TemporaryDirectory(prefix='hiro-uefi-') as tmp:
+        code = Path(os.environ['HIRO_OVMF'])
+        template = Path(os.environ['HIRO_OVMF_VARS'])
+        require(code.is_file() and template.is_file(), 'Both OVMF CODE and VARS firmware files are required')
+        variables = Path(tmp) / 'OVMF_VARS.fd'
+        shutil.copyfile(template, variables)
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', 0))
+            port = s.getsockname()[1]
+        # OVMF_CODE.fd is a split flash image, not a PC BIOS ROM. Pair it with
+        # a private writable variable store; never modify the Nix store copy.
+        command = ['qemu-system-x86_64', '-machine', 'q35', '-m', '6144', '-smp', '2',
+                   '-drive', f'if=pflash,format=raw,unit=0,readonly=on,file={code}',
+                   '-drive', f'if=pflash,format=raw,unit=1,file={variables}',
+                   '-netdev', f'user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:8080',
+                   '-device', 'virtio-net-pci,netdev=net0',
+                   '-display', 'none', '-monitor', 'none', '-no-reboot']
+        if os.access('/dev/kvm', os.R_OK | os.W_OK):
+            command += ['-accel', 'kvm', '-cpu', 'host']
         else:
-            raise ValueError('Embedded proxy did not start within 7 minutes; see boot.log')
-        require(status('/ready') == 503, 'Non-TDX VM unexpectedly became attestation-ready')
-        require(status('/v1/attestation?nonce=' + '01' * 32) == 503, 'Non-TDX VM supplied accepted evidence')
-        require(status('/v3/chat/completions') == 404, 'Plaintext application route exposed')
-        (dist / 'boot-check.json').write_text(json.dumps({
-            'uefi_boot': 'passed', 'embedded_proxy_health': 200,
-            'non_tdx_ready': 503, 'non_tdx_attestation': 503,
-            'hardware_attestation': 'requires deployment on Intel TDX',
-        }, indent=2) + '\n')
-        print('UEFI boot and embedded proxy startup passed; non-TDX evidence correctly rejected')
-    finally:
-        vm.terminate()
-        try:
-            vm.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            vm.kill()
-            vm.wait()
+            command += ['-accel', 'tcg', '-cpu', 'max']
+        if args.preflight:
+            command += ['-S', '-serial', 'none', '-qmp', 'stdio']
+        else:
+            command += ['-drive', f'file={dist}/image/hiro.raw,format=raw,if=virtio,snapshot=on',
+                        '-serial', 'stdio']
+        with log_path.open('wb') as log:
+            vm = subprocess.Popen(command, stderr=log,
+                                  stdout=subprocess.PIPE if args.preflight else log,
+                                  stdin=subprocess.PIPE if args.preflight else subprocess.DEVNULL)
+            try:
+                if args.preflight:
+                    requests = b'\n'.join(json.dumps({'execute': cmd}).encode() for cmd in
+                                          ['qmp_capabilities', 'query-status', 'quit']) + b'\n'
+                    output, _ = vm.communicate(requests, timeout=15)
+                    log.write(output)
+                    replies = [json.loads(line) for line in output.splitlines() if line.strip()]
+                    require(vm.returncode == 0 and any(
+                        reply.get('return', {}).get('status') in ('prelaunch', 'paused') for reply in replies
+                    ), 'QEMU could not initialize the UEFI firmware and network devices')
+                    print('QEMU, UEFI flash pair and network startup passed')
+                    return
+                deadline = time.monotonic() + 420
+                while time.monotonic() < deadline:
+                    require(vm.poll() is None, f'UEFI guest exited with status {vm.returncode}')
+                    try:
+                        if status(port, '/health') == 200:
+                            break
+                    except (OSError, TimeoutError):
+                        pass
+                    time.sleep(3)
+                else:
+                    raise ValueError('Embedded proxy did not start within 7 minutes')
+                require(status(port, '/ready') == 503, 'Non-TDX VM unexpectedly became attestation-ready')
+                require(status(port, '/v1/attestation?nonce=' + '01' * 32) == 503, 'Non-TDX VM supplied accepted evidence')
+                require(status(port, '/v3/chat/completions') == 404, 'Plaintext application route exposed')
+                (dist / 'boot-check.json').write_text(json.dumps({
+                    'uefi_boot': 'passed', 'embedded_proxy_health': 200,
+                    'non_tdx_ready': 503, 'non_tdx_attestation': 503,
+                    'hardware_attestation': 'requires deployment on Intel TDX',
+                }, indent=2) + '\n')
+                print('UEFI boot and embedded proxy startup passed; non-TDX evidence correctly rejected')
+            finally:
+                if vm.poll() is None:
+                    vm.terminate()
+                    try:
+                        vm.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        vm.kill()
+                        vm.wait()
+
+
+try:
+    boot()
+except Exception as error:
+    print(f'Boot check failed: {error}', file=sys.stderr)
+    if log_path.exists():
+        print('\n'.join(log_path.read_text(errors='replace').splitlines()[-160:]), file=sys.stderr)
+    sys.exit(1)

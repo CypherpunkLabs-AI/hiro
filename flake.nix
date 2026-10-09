@@ -21,6 +21,7 @@
         packages = with pkgs; [ mkosi qemu_test apt dpkg binutils util-linux gptfdisk
           (python3.withPackages (ps: [ ps.pyyaml ])) go git gzip gnutar coreutils gh ] ++ diskTools;
         HIRO_OVMF = "${pkgs.OVMF.fd}/FV/OVMF_CODE.fd";
+        HIRO_OVMF_VARS = "${pkgs.OVMF.fd}/FV/OVMF_VARS.fd";
       };
     };
 }

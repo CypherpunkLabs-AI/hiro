@@ -31,6 +31,7 @@ for path in sorted(directory.iterdir()):
 run('gcloud', 'compute', 'images', 'create', name, '--project=' + project,
     '--source-uri=' + prefix + '/' + archive.name,
     '--guest-os-features=' + ','.join(manifest['guest_os_features']),
+    '--licenses=' + ','.join(manifest['licenses']),
     '--description=Hiro immutable release ' + commit,
     '--labels=application=hiro,source-commit=' + commit,
     '--storage-location=us', '--quiet')
@@ -38,6 +39,7 @@ image = json.loads(subprocess.check_output(['gcloud', 'compute', 'images', 'desc
                     '--project=' + project, '--format=json']))
 require(image['status'] == 'READY', 'GCP image is not READY')
 require(set(manifest['guest_os_features']) <= {x['type'] for x in image['guestOsFeatures']}, 'GCP image lost required features')
+require(set(manifest['licenses']) <= set(image.get('licenses', [])), 'GCP image lost its OS license')
 record = {'project': project, 'image': name, 'image_id': image['id'], 'self_link': image['selfLink'],
           'release': prefix, 'status': image['status'], 'hardware_boot_verified': False}
 (directory / 'gcp-image.json').write_text(json.dumps(record, indent=2) + '\n')
