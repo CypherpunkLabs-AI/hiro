@@ -23,15 +23,24 @@ jobs:
     timeout-minutes: 90
     env:
       GH_TOKEN: ${{ github.token }}
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      GCP_IMAGE_BUCKET: ${{ vars.GCP_IMAGE_BUCKET }}
-      GCP_IMAGE_PUBLISHER: ${{ vars.GCP_IMAGE_PUBLISHER }}
-      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'cypherpunklabs' }}
+      GCP_IMAGE_BUCKET: ${{ vars.GCP_IMAGE_BUCKET || 'cypherpunklabs-hiro-images' }}
+      GCP_IMAGE_PUBLISHER: ${{ vars.GCP_IMAGE_PUBLISHER || 'hiro-image-publisher@cypherpunklabs.iam.gserviceaccount.com' }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || 'projects/1069855069526/locations/global/workloadIdentityPools/hiro-image-publisher/providers/github-main' }}
       GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:
           persist-credentials: false
+      - name: Authenticate Google image publisher before building
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_IMAGE_PUBLISHER }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+      - name: Check Google identity federation
+        run: gcloud auth print-access-token > /dev/null
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
       - name: Install release tooling
         run: |
@@ -97,7 +106,6 @@ jobs:
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ env.GCP_IMAGE_PUBLISHER }}
           project_id: ${{ env.GCP_PROJECT_ID }}
-      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
       - name: Upload and register the GCP image
         run: |
           scripts/publish-gcp-image

@@ -16,14 +16,14 @@ python3 scripts/setup-gcp-publisher \
   --bucket cypherpunklabs-hiro-images
 ```
 
-The setup creates a dedicated image-publishing identity, a private bucket and Google Workload Identity Federation restricted to this repository's `main` image workflow. It grants image creation and bucket access, not VM creation. It prints four public values. Add them under **GitHub repository → Settings → Secrets and variables → Actions → Variables**:
+The setup creates a dedicated image-publishing identity, a private bucket and Google Workload Identity Federation restricted to this repository's `main` image workflow. It grants image creation and bucket access, not VM creation. This setup has been completed for `cypherpunklabs`; the workflow already contains those public identifiers. No repository variables are required for that project. To use a different project, override these values under **GitHub repository → Settings → Secrets and variables → Actions → Variables**:
 
 - `GCP_PROJECT_ID`
 - `GCP_IMAGE_BUCKET`
 - `GCP_IMAGE_PUBLISHER`
 - `GCP_WORKLOAD_IDENTITY_PROVIDER`
 
-No Google service-account key or laptop login is used by the job. Missing publishing configuration fails the job explicitly; the signed GitHub image release remains available.
+No Google service-account key or laptop login is used by the job. Federation is checked before the expensive build, and credentials are refreshed immediately before publication.
 
 ## Outputs and VM creation
 
