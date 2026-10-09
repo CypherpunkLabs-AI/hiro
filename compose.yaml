@@ -1,8 +1,34 @@
 # Release template. scripts/render-compose inserts immutable images from images.lock.json.
-# The first deployment contains the proxy. Add services with their actual contracts later.
+# All three services use the proxy repository's single published image.
 services:
-  hiro-proxy:
+  volume-init:
+    x-hiro-image: hiro-proxy
     image: ${HIRO_PROXY_IMAGE:?render with scripts/render-compose}
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        chown 65532:65532 /socket /evidence /proxy-state /worker-state &&
+        chmod 0700 /socket /evidence /proxy-state /worker-state
+    volumes:
+      - evidence-socket:/socket
+      - evidence:/evidence
+      - proxy-state:/proxy-state
+      - worker-state:/worker-state
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 16
+    mem_limit: 32m
+    restart: "no"
+  hiro-proxy:
+    x-hiro-image: hiro-proxy
+    image: ${HIRO_PROXY_IMAGE:?render with scripts/render-compose}
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
     ports:
       - "8080:8080"
     environment:
@@ -39,17 +65,23 @@ services:
       HIRO_SOURCE_REPOSITORY: https://github.com/cypherpunklabs-ai/hiro-proxy
       HIRO_SOURCE_COMMIT: ${HIRO_SOURCE_COMMIT:?required}
       HIRO_IMAGE_DIGEST: ${HIRO_IMAGE_DIGEST:?required}
-      HIRO_OAK_EVIDENCE_PATH: /run/hiro/evidence.json
+      HIRO_EVIDENCE_SOCKET: /run/hiro-socket/evidence.sock
+      HIRO_OAK_EVIDENCE_PATH: /run/hiro-evidence/evidence.json
+      HIRO_EVIDENCE_STATE_DIR: /var/lib/hiro-verification
+      HIRO_TRUST_CONFIG_PATH: /etc/hiro-trust.json
+      HIRO_SIGSTORE_ROOTS_PATH: /etc/hiro-sigstore-roots.json
       HIRO_ATTESTED_SUBJECT: ${HIRO_ATTESTED_SUBJECT:?required}
       RUST_LOG: hiro_proxy=info
     volumes:
-      - type: bind
-        source: /run/hiro/evidence
-        target: /run/hiro
-        read_only: true
-        bind:
-          create_host_path: false
+      - evidence-socket:/run/hiro-socket
+      - evidence:/run/hiro-evidence:ro
+      - proxy-state:/var/lib/hiro-verification
       - /var/run/dstack.sock:/var/run/dstack.sock:ro
+    configs:
+      - source: verifier-trust
+        target: /etc/hiro-trust.json
+      - source: sigstore-roots
+        target: /etc/hiro-sigstore-roots.json
     networks:
       - default
       - hiro-confidential
@@ -63,6 +95,62 @@ services:
     pids_limit: 128
     mem_limit: 2g
     restart: unless-stopped
+
+  evidence-worker:
+    x-hiro-image: hiro-proxy
+    image: ${HIRO_PROXY_IMAGE:?render with scripts/render-compose}
+    command: [evidence]
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+    environment:
+      HIRO_EVIDENCE_SOCKET: /run/hiro-socket/evidence.sock
+      HIRO_OAK_EVIDENCE_PATH: /run/hiro-evidence/evidence.json
+      HIRO_EVIDENCE_STATE_DIR: /var/lib/hiro-verification
+      HIRO_TRUST_CONFIG_PATH: /etc/hiro-trust.json
+      HIRO_SIGSTORE_ROOTS_PATH: /etc/hiro-sigstore-roots.json
+      # scripts/render-compose inserts reviewed public URLs from trust/runtime.json.
+      HIRO_RELEASE_BASE_URL: ${HIRO_RELEASE_BASE_URL:?render with scripts/render-compose}
+      HIRO_POLICY_URL: ${HIRO_POLICY_URL:?render with scripts/render-compose}
+      HIRO_KMS_URL: ${HIRO_KMS_URL:?render with scripts/render-compose}
+      HIRO_PCCS_URL: ${HIRO_PCCS_URL:?render with scripts/render-compose}
+      RUST_LOG: hiro_proxy=info
+    volumes:
+      - evidence-socket:/run/hiro-socket:ro
+      - evidence:/run/hiro-evidence
+      - worker-state:/var/lib/hiro-verification
+    configs:
+      - source: verifier-trust
+        target: /etc/hiro-trust.json
+      - source: sigstore-roots
+        target: /etc/hiro-sigstore-roots.json
+    healthcheck:
+      test: [CMD, /usr/local/bin/hiro-proxy, evidence-health]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    read_only: true
+    tmpfs: ["/tmp:size=16m,noexec,nosuid,nodev"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 512m
+    restart: unless-stopped
+
+volumes:
+  evidence-socket:
+  evidence:
+  proxy-state:
+  worker-state:
+
+# Rendering replaces local file references with literal public config contents.
+# The CVM receives a self-contained Compose document.
+configs:
+  verifier-trust:
+    file: ./trust/verifier.json
+  sigstore-roots:
+    file: ./trust/sigstore-roots.json
 
 networks:
   hiro-confidential:

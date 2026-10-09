@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Read public deployment metadata using the runner's Phala Cloud credentials."""
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from urllib.parse import urlsplit
+
+from hiro import ROOT, matches, read, require, write
+
+
+def query(*arguments):
+    result = subprocess.run(["phala", *arguments, "--json"], capture_output=True,
+                            text=True, timeout=90)
+    require(result.returncode == 0, f"Phala {' '.join(arguments)} failed; check account access")
+    value = json.loads(result.stdout)
+    # CLI JSON success envelopes retain the API response in data.
+    if isinstance(value, dict) and value.get("success") is True and "data" in value:
+        value = value["data"]
+    return value
+
+
+def public_hex(value, size=None):
+    require(isinstance(value, str), "Phala did not return a public key/hash")
+    value = value.removeprefix("0x").lower()
+    require(matches(value, r"(?:[0-9a-f]{2})+") and len(value) <= 2048,
+            "invalid Phala public key/hash")
+    require(size is None or len(value) == size * 2, "unexpected public key/hash length")
+    return value
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--check-trust", action="store_true")
+    args = parser.parse_args()
+    require(bool(os.environ.get("PHALA_CLOUD_API_KEY")),
+            "GitHub Actions secret PHALA_CLOUD_API_KEY is missing")
+    require(not os.environ.get("DEBUG") and not os.environ.get("NODE_DEBUG"),
+            "disable debug output when using Cloud credentials")
+    contract = query("kms", "phala")
+    require(contract["contract_address"] == "phala" and contract["chain_id"] == 0,
+            "unexpected KMS contract")
+    root = public_hex(contract["k256_pubkey"], 33)
+    ca = public_hex(contract["ca_pubkey"])
+    nodes = query("kms", "nodes", "phala")["items"]
+    urls = []
+    for node in nodes:
+        url = node["url"]
+        parsed = urlsplit(url)
+        require(parsed.scheme == "https" and parsed.hostname and not parsed.username
+                and not parsed.password and not parsed.query and not parsed.fragment,
+                "Phala returned an invalid KMS URL")
+        urls.append(url.rstrip("/"))
+    require(urls, "Phala returned no KMS nodes")
+    images = query("os-images", "--prod", "--all")["items"]
+    selected = [image for image in images if args.image in (image["name"], image["slug"])]
+    require(len(selected) == 1, "requested production OS image was not uniquely found")
+    image = selected[0]
+    require(image["is_dev"] is False and image["requires_gpu"] is False,
+            "proxy requires a production CPU OS image")
+    metadata = {
+        "schema": 1,
+        "kms": {"root_public_key": root,
+                "ca_public_key_sha256": hashlib.sha256(bytes.fromhex(ca)).hexdigest(),
+                "urls": sorted(set(urls))},
+        "os_image": {"name": image["name"], "slug": image["slug"],
+                     "version": image["version"],
+                     "os_image_hash": public_hex(image["os_image_hash"], 32)},
+    }
+    write("dist/phala-public-metadata.json", metadata)
+    if args.check_trust:
+        runtime = read("trust/runtime.json")
+        require(isinstance(runtime["kms_url"], str)
+                and runtime["kms_url"].rstrip("/") in urls,
+                "configured KMS URL is not a Phala KMS node")
+        require(any(approval["root_public_key"] == root
+                    and approval["ca_public_key_sha256"] == metadata["kms"]["ca_public_key_sha256"]
+                    for approval in read("trust/kms.json")["kms"]),
+                "Phala KMS keys differ from the committed trust approvals")
+    print("Retrieved public Phala KMS keys, node URLs and selected production OS identity.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        sys.exit(1)

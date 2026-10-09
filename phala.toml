@@ -1,3 +1,6 @@
 name = "hiro-cvm"
 gateway_port = 8080
+compose_file = "dist/compose.yaml"
+public_logs = false
+public_sysinfo = false
 # gateway_domain = "your-configured-gateway-domain"

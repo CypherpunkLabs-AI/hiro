@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Assemble runtime bootstrap trust from pinned roots and publisher revisions."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+from hiro import ROOT, matches, read, require, write
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repository", required=True, help="hiro release/policy repository, owner/name")
+    parser.add_argument("--policy-commit", required=True, help="reviewed policy signing workflow revision")
+    parser.add_argument("--release-commit", required=True, help="reviewed release signing workflow revision")
+    parser.add_argument("--roots", required=True, type=Path, help="reviewed Sigstore trusted-root JSON")
+    parser.add_argument("--roots-sha256", required=True, help="independently pinned root file digest")
+    parser.add_argument("--checkpoint-origin", required=True, action="append", metavar="LOG_ID=ORIGIN")
+    parser.add_argument("--subject", required=True, help="expected attested Hiro workload subject")
+    parser.add_argument("--not-after", required=True, type=int, help="bootstrap trust expiry, Unix seconds")
+    parser.add_argument("--minimum-policy-sequence", type=int, default=1)
+    args = parser.parse_args()
+    require(matches(args.repository, r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"), "invalid repository")
+    for value in (args.policy_commit, args.release_commit):
+        require(matches(value, r"[0-9a-f]{40}"), "signer revision must be a full Git commit")
+    raw = args.roots.read_bytes()
+    require(len(raw) <= 262144 and hashlib.sha256(raw).hexdigest() == args.roots_sha256,
+            "Sigstore roots do not match the supplied pin")
+    json.loads(raw)
+    origins = []
+    for value in args.checkpoint_origin:
+        log_id, separator, origin = value.partition("=")
+        require(separator and matches(log_id, r"[0-9a-f]{64}") and 0 < len(origin) <= 256,
+                "checkpoint origin must be LOG_ID=ORIGIN")
+        origins.append({"log_id": log_id, "origin": origin})
+    require(0 < len(origins) <= 16, "at most 16 checkpoint origins are supported")
+    now = int(time.time())
+    require(args.not_after > now and args.minimum_policy_sequence > 0, "invalid validity/floor")
+    require(0 < len(args.subject) <= 256, "invalid workload subject")
+    repository = json.loads(subprocess.check_output(
+        ["gh", "api", f"repos/{args.repository}"], text=True))
+    require(repository["full_name"].lower() == args.repository.lower(), "repository identity changed")
+    require(not repository["private"],
+            "the current Hiro verifier requires public-good Sigstore attestations from a public repository")
+    publishers = read("trust/publishers.json")
+    for key, commit in (("policy_publisher", args.policy_commit), ("release_publisher", args.release_commit)):
+        publisher = publishers[key]
+        # Resolve real numeric repository identities; never derive them from a name.
+        subprocess.run(["gh", "api", f"repos/{args.repository}/contents/{publisher['workflow']}?ref={commit}"],
+                       check=True, stdout=subprocess.DEVNULL)
+        publisher.update(repository=repository["full_name"], owner_id=repository["owner"]["id"],
+                         repository_id=repository["id"], workflow_commit=commit)
+    policy = read("trust/policy.json")
+    trust = {
+        "schema": 1, "policy_id": publishers["policy_id"], "service": publishers["service"],
+        "workload_subject": args.subject, "recipient": "oak-session-v1-ed25519",
+        "trust_root_sha256": args.roots_sha256,
+        "minimum_policy_sequence": args.minimum_policy_sequence,
+        "minimum_release_sequence": policy["minimum_release_sequence"],
+        "not_before": now, "not_after": args.not_after,
+        "max_policy_age_seconds": policy["lifetime_seconds"],
+        "max_challenge_age_seconds": 120, "max_recipient_age_seconds": 300,
+        "policy_ref": publishers["policy_ref"],
+        "policy_publisher": publishers["policy_publisher"],
+        "release_publisher": publishers["release_publisher"], "checkpoint_origins": origins,
+    }
+    write("trust/publishers.json", publishers)
+    (ROOT / "trust/sigstore-roots.json").write_bytes(raw)
+    write("trust/verifier.json", trust)
+    print("Wrote public verifier trust, root bytes and authenticated GitHub repository identities.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        sys.exit(1)

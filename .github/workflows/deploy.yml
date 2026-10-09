@@ -1,0 +1,99 @@
+name: Deploy locked stack to Phala
+on:
+  workflow_dispatch:
+    inputs:
+      proxy_run:
+        description: Successful proxy CI run ID; empty selects latest successful main push
+        required: false
+        type: string
+      os_image:
+        description: Reviewed production dstack OS image
+        required: true
+        type: string
+      instance_type:
+        description: Phala instance type
+        required: true
+        type: string
+      region:
+        description: Phala region
+        required: true
+        type: string
+      cli_version:
+        description: Exact stable Phala CLI version
+        required: true
+        type: string
+      cvm_id:
+        description: Existing CVM ID to update; empty creates a CVM
+        required: false
+        type: string
+permissions:
+  contents: read
+  packages: read
+  attestations: read
+concurrency:
+  group: phala-hiro
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          persist-credentials: false
+      - name: Install pinned deployment tools
+        env:
+          CLI_VERSION: ${{ inputs.cli_version }}
+        run: |
+          [[ "$CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          npm install --global "phala@$CLI_VERSION"
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r scripts/requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Import and verify published proxy image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROXY_RUN: ${{ inputs.proxy_run }}
+        run: |
+          arguments=()
+          if [[ -n "$PROXY_RUN" ]]; then arguments+=(--run "$PROXY_RUN"); fi
+          scripts/import-proxy-image "${arguments[@]}"
+      - name: Check all repository deployment inputs before provisioning
+        run: scripts/deployment-status --bootstrap
+      - name: Validate, verify and deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          RUNTIME_ENV: ${{ secrets.HIRO_RUNTIME_ENV }}
+          OS_IMAGE: ${{ inputs.os_image }}
+          INSTANCE_TYPE: ${{ inputs.instance_type }}
+          REGION: ${{ inputs.region }}
+          CLI_VERSION: ${{ inputs.cli_version }}
+          CVM_ID: ${{ inputs.cvm_id }}
+        run: |
+          test -n "$PHALA_CLOUD_API_KEY"
+          test -n "$RUNTIME_ENV"
+          scripts/discover-phala --image "$OS_IMAGE" --check-trust
+          umask 077
+          env_file="$(mktemp "$RUNNER_TEMP/hiro-env.XXXXXX")"
+          trap 'rm -f -- "$env_file"' EXIT
+          printf '%s\n' "$RUNTIME_ENV" > "$env_file"
+          unset RUNTIME_ENV
+          arguments=(--env "$env_file" --image "$OS_IMAGE"
+            --instance-type "$INSTANCE_TYPE" --region "$REGION" --cli-version "$CLI_VERSION")
+          if [[ -n "$CVM_ID" ]]; then arguments+=(--cvm-id "$CVM_ID"); fi
+          scripts/deploy "${arguments[@]}"
+      - name: Preserve public Phala metadata
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: hiro-deployment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/phala-public-metadata.json
+            dist/deployment.json
+            dist/app-compose.json
+            dist/compose.yaml
+            images.lock.json
+          if-no-files-found: ignore
+          retention-days: 30

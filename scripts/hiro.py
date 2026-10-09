@@ -8,6 +8,7 @@ import re
 import sys
 import time
 import tomllib
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -37,8 +38,13 @@ def validate(strict=False):
     lock = read("images.lock.json")
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
     require(lock.get("schema") == 1, "unsupported image lock schema")
-    require(set(lock["services"]) == set(compose["services"]),
-            "Compose services and image lock must match")
+    selected = {service.get("x-hiro-image", name)
+                for name, service in compose["services"].items()}
+    require(set(lock["services"]) == selected,
+            "Every Compose image must reference exactly one locked artifact")
+    for name, service in compose["services"].items():
+        require("build" not in service, f"{name}: build images in the service repository")
+        require(not service.get("privileged", False), f"{name}: privileged mode forbidden")
     for name, entry in lock["services"].items():
         require(matches(entry["image"], r"[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9._/-]+"),
                 f"{name}: expected registry/repository without a tag")
@@ -55,9 +61,6 @@ def validate(strict=False):
             value = entry.get(field)
             require((value is None and not strict) or matches(value, pattern),
                     f"{name}.{field}: configure a valid immutable build reference")
-        service = compose["services"][name]
-        require("build" not in service, f"{name}: build images in the service repository")
-        require(not service.get("privileged", False), f"{name}: privileged mode forbidden")
     phala = tomllib.loads((ROOT / "phala.toml").read_text())
     require(len(phala["name"]) >= 5, "Phala CVM name requires at least five characters")
     for filename, key in (("platforms", "platforms"), ("kms", "kms")):
@@ -82,15 +85,76 @@ def validate(strict=False):
     return lock, compose
 
 
+def runtime_inputs():
+    """Validate provisioning inputs; cryptographic appraisal stays in the verifier."""
+    trust_bytes = (ROOT / "trust/verifier.json").read_bytes()
+    roots_bytes = (ROOT / "trust/sigstore-roots.json").read_bytes()
+    require(len(trust_bytes) <= 65536 and len(roots_bytes) <= 262144,
+            "runtime trust documents exceed verifier limits")
+    trust = json.loads(trust_bytes)
+    json.loads(roots_bytes)
+    require(trust.get("schema") == 1, "unsupported verifier trust schema")
+    require(trust.get("recipient") == "oak-session-v1-ed25519", "expected Oak recipient")
+    require(trust.get("trust_root_sha256") == hashlib.sha256(roots_bytes).hexdigest(),
+            "Sigstore roots do not match the provisioned trust-root hash")
+    now = int(time.time())
+    require(trust["not_before"] <= now < trust["not_after"], "verifier trust is not currently valid")
+    for field in ("minimum_policy_sequence", "minimum_release_sequence"):
+        require(type(trust[field]) is int and trust[field] > 0, f"invalid {field}")
+    for field, maximum in (("max_policy_age_seconds", 604800),
+                           ("max_challenge_age_seconds", 120), ("max_recipient_age_seconds", 300)):
+        require(type(trust[field]) is int and 0 < trust[field] <= maximum, f"invalid {field}")
+    publishers = read("trust/publishers.json")
+    for field in ("policy_id", "service", "policy_ref", "policy_publisher", "release_publisher"):
+        require(trust.get(field) == publishers[field], f"verifier {field} differs from publishers.json")
+    for field in ("policy_publisher", "release_publisher"):
+        publisher = trust[field]
+        require(matches(publisher["repository"], r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"),
+                f"{field}: configure the publisher repository")
+        require(matches(publisher["workflow_commit"], r"[0-9a-f]{40}"), f"{field}: missing workflow pin")
+        require(all(type(publisher[key]) is int and publisher[key] > 0
+                    for key in ("owner_id", "repository_id")), f"{field}: missing GitHub numeric identities")
+    require(matches(trust["policy_ref"], r"refs/heads/[^\s]+"), "policy must be signed from a branch")
+    require(isinstance(trust["workload_subject"], str) and 0 < len(trust["workload_subject"]) <= 256,
+            "missing workload subject")
+    require(0 < len(trust["checkpoint_origins"]) <= 16, "configure transparency-log checkpoint origins")
+    for origin in trust["checkpoint_origins"]:
+        require(matches(origin["log_id"], r"[0-9a-f]{64}") and bool(origin["origin"]),
+                "invalid checkpoint origin")
+    runtime = read("trust/runtime.json")
+    require(runtime.get("schema") == 1, "unsupported runtime schema")
+    for key in ("release_base_url", "policy_url", "kms_url", "pccs_url"):
+        value = runtime.get(key)
+        require(isinstance(value, str), f"trust/runtime.json: configure {key}")
+        url = urlsplit(value)
+        require(url.scheme == "https" and bool(url.hostname) and not url.username
+                and not url.password and not url.fragment, f"{key}: expected credential-free HTTPS URL")
+        if key == "release_base_url":
+            require(value.endswith("/") and not url.query, "release_base_url needs a trailing slash and no query")
+    return trust_bytes.decode(), roots_bytes.decode(), runtime
+
+
 def rendered():
     lock, compose = validate(strict=True)
-    for name, entry in lock["services"].items():
-        compose["services"][name]["image"] = entry["image"] + "@" + entry["digest"]
+    trust_text, roots_text, runtime = runtime_inputs()
+    for name, service in compose["services"].items():
+        entry = lock["services"][service.pop("x-hiro-image", name)]
+        service["image"] = entry["image"] + "@" + entry["digest"]
+    # Escape Compose interpolation without changing mounted JSON bytes.
+    compose["configs"] = {
+        "verifier-trust": {"content": trust_text.replace("$", "$$")},
+        "sigstore-roots": {"content": roots_text.replace("$", "$$")},
+    }
+    compose["services"]["evidence-worker"]["environment"].update({
+        "HIRO_" + key.upper(): value.replace("$", "$$")
+        for key, value in runtime.items() if key != "schema"
+    })
     proxy = lock["services"]["hiro-proxy"]
     compose["services"]["hiro-proxy"]["environment"].update({
         "HIRO_SOURCE_REPOSITORY": "https://github.com/" + proxy["source_repository"],
         "HIRO_SOURCE_COMMIT": proxy["source_commit"],
         "HIRO_IMAGE_DIGEST": proxy["digest"],
+        "HIRO_ATTESTED_SUBJECT": json.loads(trust_text)["workload_subject"].replace("$", "$$"),
     })
     return compose
 
@@ -100,6 +164,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("validate")
     check.add_argument("--locked", action="store_true", help="require every immutable image reference")
+    check.add_argument("--runtime", action="store_true", help="also require runtime trust and worker inputs")
     render = commands.add_parser("render-compose")
     render.add_argument("--output", type=Path, default=Path("dist/compose.yaml"))
     update = commands.add_parser("lock-image")
@@ -121,7 +186,9 @@ def main():
     policy.add_argument("--output", type=Path, default=Path("dist/policy.json"))
     args = parser.parse_args()
     if args.command == "validate":
-        validate(args.locked)
+        validate(args.locked or args.runtime)
+        if args.runtime:
+            runtime_inputs()
         print("Configuration valid" + ("; image references locked" if args.locked else "; unset deployment values allowed"))
     elif args.command == "render-compose":
         doc = rendered()

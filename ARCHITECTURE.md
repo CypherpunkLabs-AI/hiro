@@ -22,11 +22,20 @@ Browser/native client SDK
 Phala gateway / TLS ingress
   |
 Phala/dstack CVM
+  +-- volume-init (same proxy image, one-shot, no network)
+  |     +-- provisions UID 65532 ownership on named volumes
   +-- hiro-proxy :8080
   |     +-- Oak session termination and authenticated API dispatch
   |     +-- dstack socket: key derivation and runtime quote access
   |     +-- mounted supporting evidence: release, policy, collateral, KMS
   |     +-- attested Phala inference upstream
+  |     +-- private Unix socket serving public bootstrap evidence
+  |     +-- independent persisted verification checkpoint
+  +-- evidence-worker (same proxy image, command: evidence)
+  |     +-- private socket access, no dstack socket or application credentials
+  |     +-- fetch signed releases/policies, KMS evidence and quote collateral
+  |     +-- verify, atomically publish and refresh supporting evidence
+  |     +-- separate persisted verification checkpoint
   +-- future document/search services on private Compose networks
 
 External dependencies: PostgreSQL, authentication issuer, usage queue,
@@ -38,6 +47,20 @@ dependencies and joins the internal service network. Later workers should expose
 only the interfaces the proxy needs. Container separation inside one CVM is
 operational isolation, not an independent hardware trust boundary. The dstack
 socket is an authority-bearing API even when its filesystem mount is read-only.
+
+Both long-running services depend on successful volume initialization, not on each
+other's readiness. The worker retries while the private socket is unavailable;
+the proxy rejects private sessions while supporting evidence is unavailable.
+`evidence-worker` health uses the existing `evidence-health` executable command.
+The proxy reads the shared evidence volume read-only. Each process has exclusive
+access to its own state volume. Ordinary upgrades retain these rollback floors.
+
+`x-hiro-image` maps Compose services to an image-lock entry. The renderer replaces
+each mapping with the same immutable image reference and removes the extension.
+Public bootstrap trust is embedded through Compose `configs.content`, requiring
+Compose 2.23.1+ in the selected OS. Consequently Phala receives one self-contained
+Compose file; no repository-local trust path becomes a CVM host bind mount.
+Worker URLs and the expected subject are also fixed by this rendered composition.
 
 The stack retains the SDK/proxy's existing Oak transport. The deployment repository
 does not implement cryptography or replace dstack evidence verification. TLS
@@ -61,9 +84,18 @@ the enclave evidence and handshake binding before sending private application da
 8. A real SDK connection verifies the complete chain and exchanges encrypted traffic
    before the deployment is accepted for private users.
 
-Steps 1–3 and unsigned manifest preparation have tooling here. Signing, publication,
-Phala provisioning, deployment wiring for the proxy's implemented evidence worker,
-and live SDK acceptance still require integration. Preparation workflow success is not a production-release gate.
+Image import/provenance verification, Compose rendering, worker wiring and Phala
+deployment have tooling here. `scripts/deploy` uses the official CLI, checks its
+explicit version, verifies all image provenance and validates the confidential
+environment without printing it. `--check` performs preparation without deploying;
+the manual deployment workflow calls the same script. Private application readiness
+remains controlled by the proxy's evidence gate.
+
+The policy workflow signs and publishes policies; the release workflow still prepares
+unsigned artifacts. Release signing/publication, actual platform/KMS approval data
+and live SDK acceptance remain outstanding. The current verifier only supports the
+GitHub SLSA/Sigstore v0.3/Rekor v1 profile; signing with an unsupported profile does
+not become acceptable merely because the generic GitHub CLI verifies it.
 
 ## Trust ownership
 
@@ -88,6 +120,11 @@ Credentials never enter committed Compose, image locks, trust files or public
 artifacts. The `.env.example` file lists names only. Runtime supporting evidence is
 mounted read-only and needs atomic refresh before expiry. Configure logging to avoid
 request content, credentials and decrypted inference data.
+
+The Cloud control-plane token is separate from the uploaded application env file.
+The deployment script rejects Cloud credentials in that file. Deployment workflow
+secrets are passed through a private temporary file and removed on exit. Phala
+public logs and sysinfo are disabled in project configuration and deployment flags.
 
 Rollback selects a previously approved release without decreasing persisted client
 policy floors. Revoked releases stay rejected. Platform updates, signer rotation,

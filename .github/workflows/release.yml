@@ -19,7 +19,7 @@ jobs:
           .venv/bin/python -m pip install -r scripts/requirements.txt
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Require locked image references
-        run: scripts/validate --locked
+        run: scripts/validate --runtime
       - name: Verify service image provenance
         env:
           GH_TOKEN: ${{ github.token }}
