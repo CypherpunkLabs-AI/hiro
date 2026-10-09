@@ -30,6 +30,8 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/deploy.yml
     with:
+      # Operator-authorized test fallback until removed; real runtime secrets take precedence.
+      use_example_env: true
       os_image: ${{ vars.PHALA_OS_IMAGE }}
       instance_type: ${{ vars.PHALA_INSTANCE_TYPE }}
       region: ${{ vars.PHALA_REGION }}
