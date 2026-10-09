@@ -1,0 +1,3 @@
+name = "hiro-cvm"
+gateway_port = 8080
+# gateway_domain = "your-configured-gateway-domain"

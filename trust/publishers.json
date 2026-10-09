@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "policy_id": "hiro",
+  "service": "hiro",
+  "policy_ref": "refs/heads/main",
+  "policy_publisher": {
+    "repository": null,
+    "owner_id": null,
+    "repository_id": null,
+    "workflow": ".github/workflows/policy.yml",
+    "workflow_commit": null
+  },
+  "release_publisher": {
+    "repository": null,
+    "owner_id": null,
+    "repository_id": null,
+    "workflow": ".github/workflows/release.yml",
+    "workflow_commit": null
+  }
+}

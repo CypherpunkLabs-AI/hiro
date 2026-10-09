@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Verify locked OCI build provenance with GitHub's attestation verifier."""
+import subprocess
+import sys
+
+from hiro import validate
+
+try:
+    lock, _ = validate(strict=True)
+    for name, image in lock["services"].items():
+        print(f"Verifying {name}", flush=True)
+        subprocess.run([
+            "gh", "attestation", "verify", "oci://" + image["image"] + "@" + image["digest"],
+            "--repo", image["source_repository"],
+            "--signer-workflow", image["source_repository"] + "/" + image["build_workflow"],
+            "--signer-digest", image["workflow_commit"],
+            "--source-digest", image["source_commit"],
+            "--source-ref", image["source_ref"],
+            "--predicate-type", "https://slsa.dev/provenance/v1",
+            "--deny-self-hosted-runners",
+        ], check=True)
+except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+    print(f"error: {error}", file=sys.stderr)
+    sys.exit(1)

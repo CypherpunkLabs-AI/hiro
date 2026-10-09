@@ -1,0 +1,38 @@
+name: Prepare locked stack
+# Produces review artifacts. Does not sign, publish or deploy a trusted release.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Install configuration tooling
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r scripts/requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Require locked image references
+        run: scripts/validate --locked
+      - name: Verify service image provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/verify-images
+      - name: Render immutable stack
+        run: scripts/render-compose
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hiro-stack-${{ github.sha }}
+          path: |
+            dist/compose.yaml
+            images.lock.json
+            phala.toml
+            trust/*.json
+          if-no-files-found: error
+          retention-days: 30

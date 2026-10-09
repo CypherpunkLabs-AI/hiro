@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "services": {
+    "hiro-proxy": {
+      "image": "ghcr.io/cypherpunklabs-ai/hiro-proxy",
+      "digest": null,
+      "source_repository": "cypherpunklabs-ai/hiro-proxy",
+      "source_commit": null,
+      "source_ref": null,
+      "build_workflow": null,
+      "workflow_commit": null
+    }
+  }
+}

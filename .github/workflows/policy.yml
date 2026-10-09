@@ -1,0 +1,35 @@
+name: Prepare trust policy
+# Produces an unsigned review artifact, never an automatically trusted policy.
+on:
+  workflow_dispatch:
+    inputs:
+      sequence:
+        description: Monotonically increasing positive policy sequence
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Install configuration tooling
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r scripts/requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Prepare policy from reviewed configuration
+        env:
+          POLICY_SEQUENCE: ${{ inputs.sequence }}
+        run: scripts/prepare-policy --sequence "$POLICY_SEQUENCE"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hiro-policy-${{ github.run_id }}
+          path: dist/policy.json
+          if-no-files-found: error
+          retention-days: 7
