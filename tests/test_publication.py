@@ -27,6 +27,21 @@ policy = load('policy', 'prepare-published-policy.py')
 
 
 class PublicationTests(unittest.TestCase):
+    def test_release_reads_the_uploaded_deployment_directory_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            captured = Path(directory)
+            (captured / 'dist').mkdir()
+            (captured / 'images.lock.json').write_text('{}')
+            (captured / 'dist/deployment.json').write_text('{}')
+            composition = captured / 'dist/app-compose.json'
+            composition.write_text('{"measured": "exact bytes"}')
+            files = prepare.deployment_files(captured)
+            self.assertEqual(files['compose'].read_bytes(), b'{"measured": "exact bytes"}')
+            composition.unlink()
+            composition.symlink_to(captured / 'images.lock.json')
+            with self.assertRaisesRegex(ValueError, 'invalid deployment artifact'):
+                prepare.deployment_files(captured)
+
     def test_release_lifetime_is_not_extended_by_policy_renewal(self):
         with patch.object(common.time, 'time', return_value=100):
             with self.assertRaises(ValueError):

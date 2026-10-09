@@ -12,6 +12,19 @@ from hiro import ROOT, matches, read, require
 from publish_common import api, identity
 
 
+def deployment_files(captured):
+    # upload-artifact preserves dist/ because images.lock.json is at the
+    # repository root, so their least common parent is the repository itself.
+    files = {"lock": captured / "images.lock.json",
+             "deployment": captured / "dist/deployment.json",
+             "compose": captured / "dist/app-compose.json"}
+    for key, limit in (("lock", 65536), ("deployment", 8192), ("compose", 262144)):
+        path = files[key]
+        require(path.is_file() and not path.is_symlink() and path.stat().st_size <= limit,
+                f"invalid deployment artifact: {path.relative_to(captured)}")
+    return files
+
+
 def main():
     repository, _, _ = identity("release")
     ref = os.environ["GITHUB_REF"]
@@ -28,23 +41,19 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hiro-release-") as directory:
         subprocess.run(["gh", "run", "download", run_id, "--repo", repository, "--name",
                         f"hiro-deployment-{run_id}-{run['run_attempt']}", "--dir", directory], check=True)
-        captured = Path(directory)
-        for name, limit in (("images.lock.json", 65536), ("deployment.json", 8192), ("app-compose.json", 262144)):
-            path = captured / name
-            require(path.is_file() and not path.is_symlink() and path.stat().st_size <= limit,
-                    f"invalid deployment artifact: {name}")
-        lock = json.loads((captured / "images.lock.json").read_bytes())
+        captured = deployment_files(Path(directory))
+        lock = json.loads(captured["lock"].read_bytes())
         expected = read("images.lock.json")
         require(set(lock["services"]) == set(expected["services"]), "deployment services changed")
         for name, image in lock["services"].items():
             require(image["image"] == expected["services"][name]["image"]
                     and image["source_repository"] == expected["services"][name]["source_repository"],
                     "deployment image identity changed")
-        shutil.copyfile(captured / "images.lock.json", ROOT / "images.lock.json")
+        shutil.copyfile(captured["lock"], ROOT / "images.lock.json")
         subprocess.run([sys.executable, str(Path(__file__).with_name("verify-images"))], check=True)
-        deployment = json.loads((captured / "deployment.json").read_bytes())
+        deployment = json.loads(captured["deployment"].read_bytes())
         subprocess.run([sys.executable, str(Path(__file__).with_name("hiro.py")), "prepare-release",
-                        "--app-compose", str(captured / "app-compose.json"), "--app-id", deployment["app_id"],
+                        "--app-compose", str(captured["compose"]), "--app-id", deployment["app_id"],
                         "--source-commit", os.environ["GITHUB_SHA"], "--tag", ref[10:],
                         "--sequence", os.environ["RELEASE_SEQUENCE"], "--platform-id", os.environ["PLATFORM_ID"],
                         "--kms-id", os.environ["KMS_ID"], "--lifetime-seconds", os.environ["RELEASE_LIFETIME"]], check=True)

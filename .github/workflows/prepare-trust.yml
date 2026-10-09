@@ -8,6 +8,9 @@ on:
       - '.github/workflows/policy.yml'
       - 'scripts/prepare-trust'
       - 'scripts/signing_workflows.py'
+      - 'scripts/*.py'
+      - 'scripts/prepare-policy'
+      - 'scripts/verify-images'
       - 'trust/sigstore-roots.json'
   workflow_dispatch:
     inputs:

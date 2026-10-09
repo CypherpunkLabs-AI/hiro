@@ -21,6 +21,7 @@ class BootstrapTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         shutil.copytree(SCRIPTS.parent / 'trust', self.root / 'trust')
+        (self.root / 'trust/verifier.json').unlink(missing_ok=True)
         (self.root / '.github/workflows').mkdir(parents=True)
         self.signer = 'a' * 40
         self.repository = {'full_name': 'CypherpunkLabs-AI/hiro', 'id': 1411129710,
