@@ -24,7 +24,9 @@ jobs:
           .venv/bin/python -m pip install -r scripts/requirements.txt
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Validate repository configuration
-        run: scripts/validate
+        run: |
+          scripts/validate
+          python3 -m unittest discover -s tests -v
   deploy:
     needs: validate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

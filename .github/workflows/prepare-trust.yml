@@ -1,0 +1,66 @@
+name: Prepare deployment signing trust
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/prepare-trust.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/policy.yml'
+      - 'scripts/prepare-trust'
+      - 'scripts/signing_workflows.py'
+      - 'trust/sigstore-roots.json'
+  workflow_dispatch:
+    inputs:
+      subject:
+        description: Hiro workload identity to bind into the deployed stack
+        required: true
+        default: hiro
+        type: string
+permissions:
+  contents: read
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          persist-credentials: false
+      - name: Install configuration tooling
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r scripts/requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Prepare public trust against this published signer revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKLOAD_SUBJECT: ${{ inputs.subject || 'hiro' }}
+        run: |
+          scripts/prepare-trust --repository "$GITHUB_REPOSITORY" \
+            --signer-commit "$GITHUB_SHA" --subject "$WORKLOAD_SUBJECT"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import shutil
+          paths = ['trust/verifier.json', 'trust/publishers.json',
+                   'trust/runtime.json', 'trust/sigstore-roots.json',
+                   '.github/workflows/publish-release.yml', '.github/workflows/publish-policy.yml']
+          for source in paths:
+              target = Path('dist/bootstrap') / source
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(source, target)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('Prepared signing trust pinned to `' + os.environ['GITHUB_SHA'] + '`.\n\n'
+                            'Download the bootstrap artifact into the repository and commit its files. '
+                            'The artifact contains public signing configuration; KMS/platform approvals '
+                            'and a successful proxy build are checked separately by deployment preflight.\n')
+          PY
+      - name: Preserve generated public configuration
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: hiro-bootstrap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/bootstrap/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30

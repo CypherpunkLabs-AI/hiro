@@ -9,7 +9,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit
 
-from hiro import ROOT, matches, read, require, write
+from hiro import ROOT, kms_ca_digest, matches, read, require, write
 
 
 def diagnostic(result):
@@ -103,8 +103,11 @@ def main():
             errors.append("trust/kms.json: no KMS approvals configured; discovery cannot authorize KMS measurements")
         elif not any(approval["root_public_key"] == root
                      and approval["ca_public_key_sha256"] == metadata["kms"]["ca_public_key_sha256"]
+                     and approval["endpoint"].rstrip("/") == configured_url.rstrip("/")
                      for approval in approvals):
             errors.append("trust/kms.json: Phala KMS keys differ from the committed trust approvals")
+        if kms_ca_digest() != metadata["kms"]["ca_public_key_sha256"]:
+            errors.append("trust/kms-ca.pem differs from the Phala catalog root CA")
         require(not errors, "; ".join(errors))
     print("Retrieved public Phala KMS keys, node URLs and production CPU OS identities.")
 

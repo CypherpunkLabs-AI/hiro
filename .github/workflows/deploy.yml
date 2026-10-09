@@ -114,13 +114,18 @@ jobs:
           arguments=()
           if [[ -n "$PROXY_RUN" ]]; then arguments+=(--run "$PROXY_RUN"); fi
           scripts/import-proxy-image "${arguments[@]}"
-      - name: Retrieve Phala metadata and verify configured KMS trust
+      - name: Retrieve public Phala metadata
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          OS_IMAGE: ${{ inputs.os_image }}
+        run: scripts/discover-phala --image "$OS_IMAGE"
+      - name: Check all repository deployment inputs before provisioning
+        run: scripts/deployment-status --bootstrap
+      - name: Verify configured KMS roots against Phala discovery
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           OS_IMAGE: ${{ inputs.os_image }}
         run: scripts/discover-phala --image "$OS_IMAGE" --check-trust
-      - name: Check all repository deployment inputs before provisioning
-        run: scripts/deployment-status --bootstrap
       - name: Validate, verify and deploy
         env:
           GH_TOKEN: ${{ github.token }}

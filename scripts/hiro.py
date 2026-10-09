@@ -3,16 +3,18 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
+import subprocess
 import time
 import tomllib
 from urllib.parse import urlsplit
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("HIRO_ROOT", Path(__file__).resolve().parents[1])).resolve()
 
 
 def require(condition, message):
@@ -32,6 +34,19 @@ def write(path, data):
 
 def matches(value, pattern):
     return isinstance(value, str) and re.fullmatch(pattern, value) is not None
+
+
+def kms_ca_digest():
+    path = ROOT / "trust/kms-ca.pem"
+    require(path.is_file() and 0 < path.stat().st_size <= 16384, "configure bounded public trust/kms-ca.pem")
+    pem = path.read_bytes()
+    require(pem.count(b"-----BEGIN CERTIFICATE-----") == 1 and b"PRIVATE KEY" not in pem,
+            "KMS CA must contain exactly one public certificate")
+    public = subprocess.run(["openssl", "x509", "-in", str(path), "-noout", "-pubkey"],
+                            capture_output=True, check=True).stdout
+    der = subprocess.run(["openssl", "pkey", "-pubin", "-outform", "DER"], input=public,
+                         capture_output=True, check=True).stdout
+    return hashlib.sha256(der).hexdigest()
 
 
 def validate(strict=False):
@@ -69,6 +84,15 @@ def validate(strict=False):
                 f"invalid trust/{filename}.json")
         ids = [entry["id"] for entry in doc[key]]
         require(len(ids) == len(set(ids)), f"duplicate {filename} IDs")
+    platforms = {profile["id"] for profile in read("trust/platforms.json")["platforms"]}
+    for kms in read("trust/kms.json")["kms"]:
+        require(matches(kms["root_public_key"], r"0[23][0-9a-f]{64}"), "invalid approved KMS root")
+        for field, length in (("ca_public_key_sha256", 64), ("compose_sha256", 64), ("app_id", 40)):
+            require(matches(kms[field], rf"[0-9a-f]{{{length}}}"), f"invalid KMS {field}")
+        url = urlsplit(kms["endpoint"])
+        require(url.scheme == "https" and bool(url.hostname) and not url.username and not url.password
+                and not url.query and not url.fragment and url.path in ("", "/"), "invalid KMS endpoint")
+        require(kms["platform_id"] in platforms, "KMS references an unconfigured platform")
     policy = read("trust/policy.json")
     require(policy.get("schema") == 1, "unsupported policy schema")
     require(type(policy["minimum_release_sequence"]) is int and policy["minimum_release_sequence"] > 0,
@@ -131,6 +155,14 @@ def runtime_inputs():
                 and not url.password and not url.fragment, f"{key}: expected credential-free HTTPS URL")
         if key == "release_base_url":
             require(value.endswith("/") and not url.query, "release_base_url needs a trailing slash and no query")
+    ca = ROOT / "trust/kms-ca.pem"
+    require(ca.is_file() and 0 < ca.stat().st_size <= 16384, "configure trust/kms-ca.pem")
+    require(runtime.get("kms_ca_path") == "/etc/hiro-kms-ca.pem", "unexpected KMS CA mount path")
+    require(urlsplit(runtime["kms_url"]).path in ("", "/"), "KMS URL must be an origin")
+    ca_digest = kms_ca_digest()
+    require(any(kms["endpoint"].rstrip("/") == runtime["kms_url"].rstrip("/")
+                and kms["ca_public_key_sha256"] == ca_digest for kms in read("trust/kms.json")["kms"]),
+            "mounted KMS CA and endpoint do not match a reviewed approval")
     return trust_bytes.decode(), roots_bytes.decode(), runtime
 
 
@@ -144,6 +176,7 @@ def rendered():
     compose["configs"] = {
         "verifier-trust": {"content": trust_text.replace("$", "$$")},
         "sigstore-roots": {"content": roots_text.replace("$", "$$")},
+        "kms-ca": {"content": (ROOT / "trust/kms-ca.pem").read_text()},
     }
     compose["services"]["evidence-worker"]["environment"].update({
         "HIRO_" + key.upper(): value.replace("$", "$$")

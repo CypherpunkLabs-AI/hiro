@@ -113,6 +113,7 @@ services:
       HIRO_RELEASE_BASE_URL: ${HIRO_RELEASE_BASE_URL:?render with scripts/render-compose}
       HIRO_POLICY_URL: ${HIRO_POLICY_URL:?render with scripts/render-compose}
       HIRO_KMS_URL: ${HIRO_KMS_URL:?render with scripts/render-compose}
+      HIRO_KMS_CA_PATH: /etc/hiro-kms-ca.pem
       HIRO_PCCS_URL: ${HIRO_PCCS_URL:?render with scripts/render-compose}
       RUST_LOG: hiro_proxy=info
     volumes:
@@ -124,6 +125,8 @@ services:
         target: /etc/hiro-trust.json
       - source: sigstore-roots
         target: /etc/hiro-sigstore-roots.json
+      - source: kms-ca
+        target: /etc/hiro-kms-ca.pem
     healthcheck:
       test: [CMD, /usr/local/bin/hiro-proxy, evidence-health]
       interval: 30s
@@ -151,6 +154,8 @@ configs:
     file: ./trust/verifier.json
   sigstore-roots:
     file: ./trust/sigstore-roots.json
+  kms-ca:
+    file: ./trust/kms-ca.pem
 
 networks:
   hiro-confidential:

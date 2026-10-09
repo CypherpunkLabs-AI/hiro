@@ -15,7 +15,7 @@ try:
         for field, value in entry.items():
             if value is None:
                 missing.append(f"images.lock.json: {name}.{field} (import the successful proxy CI run)")
-    for filename in ("verifier.json", "sigstore-roots.json"):
+    for filename in ("verifier.json", "sigstore-roots.json", "kms-ca.pem"):
         if not (ROOT / "trust" / filename).is_file():
             missing.append(f"trust/{filename} (scripts/prepare-trust)")
     for field, value in read("trust/runtime.json").items():
@@ -24,6 +24,9 @@ try:
     for filename, key in (("platforms.json", "platforms"), ("kms.json", "kms")):
         if not read("trust/" + filename)[key]:
             missing.append(f"trust/{filename}: reviewed {key} approvals")
+    for name in ("publish-release.yml", "publish-policy.yml"):
+        if not (ROOT / ".github/workflows" / name).is_file():
+            missing.append(f".github/workflows/{name} (scripts/prepare-trust generates pinned signer callers)")
     if not args.bootstrap and not read("trust/policy.json")["approved_releases"]:
         missing.append("trust/policy.json: approved signed-release digest")
     if all((ROOT / "trust" / name).is_file() for name in ("verifier.json", "sigstore-roots.json")):

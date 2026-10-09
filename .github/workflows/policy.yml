@@ -1,52 +1,86 @@
 name: Sign and publish trust policy
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      sequence:
-        description: Monotonically increasing positive policy sequence
+      signer_commit:
         required: true
         type: string
-permissions:
-  contents: read
+      approve_release:
+        required: false
+        type: string
+        default: ''
 concurrency:
   group: hiro-evidence-publication
   cancel-in-progress: false
 jobs:
-  prepare:
+  publish:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: write
       id-token: write
       attestations: write
+      packages: read
+    defaults:
+      run:
+        working-directory: source
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HIRO_ROOT: ${{ github.workspace }}/source
+      SIGNER_COMMIT: ${{ inputs.signer_commit }}
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - name: Bind tool checkout to the actual reusable signer revision
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 - <<'PYTOKEN'
+          import base64, json, os, urllib.parse, urllib.request
+          revision = os.environ["SIGNER_COMMIT"]
+          endpoint = urllib.parse.urlsplit(os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"])
+          if endpoint.scheme != "https" or not endpoint.hostname or not endpoint.hostname.endswith(".actions.githubusercontent.com"):
+              raise SystemExit("Unexpected GitHub OIDC endpoint")
+          query = urllib.parse.parse_qsl(endpoint.query) + [("audience", "hiro-signing-revision")]
+          url = urllib.parse.urlunsplit(endpoint._replace(query=urllib.parse.urlencode(query)))
+          request = urllib.request.Request(url, headers={
+              "Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]})
+          with urllib.request.urlopen(request, timeout=20) as response:
+              token = json.load(response)["value"]
+          payload = token.split(".")[1]
+          claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+          if claims["job_workflow_sha"] != revision:
+              raise SystemExit("Signer checkout revision mismatch")
+          if claims["job_workflow_ref"] != os.environ["GITHUB_REPOSITORY"] + "/.github/workflows/policy.yml@" + revision:
+              raise SystemExit("Unexpected reusable signing workflow")
+          PYTOKEN
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:
+          path: source
           persist-credentials: false
-      - name: Install configuration tooling
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          path: signer
+          ref: ${{ inputs.signer_commit }}
+          persist-credentials: false
+      - name: Install pinned signing tools
         run: |
           python3 -m venv .venv
-          .venv/bin/python -m pip install -r scripts/requirements.txt
+          .venv/bin/python -m pip install -r ../signer/scripts/requirements.txt
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-      - name: Prepare policy from reviewed configuration
+      - name: Authenticate prior policy and prepare renewal
         env:
-          POLICY_SEQUENCE: ${{ inputs.sequence }}
-        run: scripts/prepare-policy --sequence "$POLICY_SEQUENCE"
+          APPROVE_RELEASE: ${{ inputs.approve_release }}
+        run: python3 ../signer/scripts/prepare-published-policy.py
       - name: Sign policy
         id: signature
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
-          subject-path: dist/policy.json
+          subject-path: source/dist/policy.json
       - name: Verify and publish policy
         env:
-          GH_TOKEN: ${{ github.token }}
           POLICY_BUNDLE: ${{ steps.signature.outputs.bundle-path }}
-          WORKFLOW_COMMIT: ${{ github.workflow_sha }}
-        run: python3 scripts/publish-policy.py
+        run: python3 ../signer/scripts/publish-policy.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: hiro-policy-${{ github.run_id }}
-          path: dist/signed-policy.json
+          name: hiro-policy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: source/dist/signed-policy.json
           if-no-files-found: error
-          retention-days: 7

@@ -9,20 +9,31 @@ import sys
 import time
 
 from hiro import ROOT, matches, read, require, write
+from signing_workflows import write_callers
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repository", required=True, help="hiro release/policy repository, owner/name")
-    parser.add_argument("--policy-commit", required=True, help="reviewed policy signing workflow revision")
-    parser.add_argument("--release-commit", required=True, help="reviewed release signing workflow revision")
-    parser.add_argument("--roots", required=True, type=Path, help="reviewed Sigstore trusted-root JSON")
-    parser.add_argument("--roots-sha256", required=True, help="independently pinned root file digest")
-    parser.add_argument("--checkpoint-origin", required=True, action="append", metavar="LOG_ID=ORIGIN")
-    parser.add_argument("--subject", required=True, help="expected attested Hiro workload subject")
-    parser.add_argument("--not-after", required=True, type=int, help="bootstrap trust expiry, Unix seconds")
+    parser.add_argument("--repository", default=read("trust/publishers.json")["release_publisher"]["repository"],
+                        help="hiro release/policy repository, owner/name")
+    parser.add_argument("--signer-commit", help="reviewed published revision for both signing workflows")
+    parser.add_argument("--policy-commit", help="override the policy signing workflow revision")
+    parser.add_argument("--release-commit", help="override the release signing workflow revision")
+    parser.add_argument("--roots", type=Path, default=ROOT / "trust/sigstore-roots.json",
+                        help="reviewed Sigstore trusted-root JSON (committed public-good roots by default)")
+    parser.add_argument("--roots-sha256", default="6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66",
+                        help="independently pinned root file digest")
+    parser.add_argument("--checkpoint-origin", action="append", metavar="LOG_ID=ORIGIN",
+                        help="override the verified public-good Rekor v1 checkpoint origin")
+    parser.add_argument("--subject", default="hiro", help="expected attested Hiro workload subject")
+    parser.add_argument("--not-after", type=int, default=int(time.time()) + 90 * 86400,
+                        help="bootstrap trust expiry, Unix seconds (90 days by default)")
     parser.add_argument("--minimum-policy-sequence", type=int, default=1)
     args = parser.parse_args()
+    args.policy_commit = args.policy_commit or args.signer_commit
+    args.release_commit = args.release_commit or args.signer_commit
+    args.checkpoint_origin = args.checkpoint_origin or [
+        "c0d23d6ad406973f9559f3ba2d1ca01f84147d8ffc5b8445c224f98b9591801d=rekor.sigstore.dev - 1193050959916656506"]
     require(matches(args.repository, r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"), "invalid repository")
     for value in (args.policy_commit, args.release_commit):
         require(matches(value, r"[0-9a-f]{40}"), "signer revision must be a full Git commit")
@@ -70,6 +81,12 @@ def main():
     write("trust/publishers.json", publishers)
     (ROOT / "trust/sigstore-roots.json").write_bytes(raw)
     write("trust/verifier.json", trust)
+    runtime = read("trust/runtime.json")
+    base = f"https://raw.githubusercontent.com/{repository['full_name']}/evidence/"
+    runtime.update(release_base_url=base + "releases/", policy_url=base + "policy.json",
+                   kms_ca_path="/etc/hiro-kms-ca.pem")
+    write("trust/runtime.json", runtime)
+    write_callers(repository["full_name"], args.policy_commit, args.release_commit)
     print("Wrote public verifier trust, root bytes and authenticated GitHub repository identities.")
 
 

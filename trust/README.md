@@ -1,55 +1,79 @@
-# Trust configuration
+# Deployment trust and release publication
 
-These files are reviewed release inputs, not signed trust roots or live evidence.
-Empty lists and null identities deliberately authorize no deployment.
+Hiro keeps Phala Cloud KMS (`--kms phala`). This trusts Phala's authorization governance. The signed Hiro policy additionally controls which measured releases the proxy accepts. It does not change the KMS's key-release policy. Onchain governance requires a separate deployment choice.
 
-| File | Owner and purpose |
-| --- | --- |
-| `platforms.json` | Reviewed TDX/dstack platform measurements, TCB constraints and accepted machine PPID hashes. |
-| `kms.json` | Approved KMS root public key, CA key hash, app ID, composition hash and platform profile. |
-| `publishers.json` | Release/policy service identifiers and exact GitHub publisher identities to provision in the SDK. |
-| `policy.json` | Minimum release sequence, approved/revoked release hashes and policy lifetime. |
-| `runtime.json` | Direct HTTPS endpoints for signed releases/policy, the Phala KMS node and PCCS. |
-| `verifier.json` | Generated public bootstrap trust, matching the proxy and SDK `TrustConfig` format. |
-| `sigstore-roots.json` | Exact reviewed root bytes pinned by `verifier.json`. |
+## KMS evidence
 
-Platform and KMS entries must follow `PlatformProfile` and `KmsApproval` in
-`cypherpunk-client/crates/verifier/src/model.rs`. Do not infer trusted values from an
-unauthenticated target quote. Phala/dstack's reviewed platform and KMS information
-provides the basis for approval; Hiro's client policy determines acceptance.
+The worker connects directly to `kms_url` using only `trust/kms-ca.pem` as its TLS trust anchor. It checks the hostname, certificate lifetime and production metadata, and captures the actual peer certificate. The proxy independently checks the signed policy's CA SPKI digest and endpoint, the certificate chain, the Intel quote, the `ratls-cert` report-data binding, and approved KMS app/compose/platform measurements. Original `bootstrap_info` is neither required nor used. Historical key-generation evidence is not represented as current endpoint attestation.
 
-Publisher entries require the repository name, numeric GitHub owner/repository IDs,
-workflow path and exact signing workflow commit. The source commit and signing
-workflow commit are distinct. Choose and pin the signing workflow before configuring
-clients; changes to that pinned identity require a trust update. The policy workflow signs and publishes policies. Release signing still requires
-integration, and publisher identities are not yet populated.
+The committed CA is public Phala Cloud root material. Its SHA256 SPKI digest is `3b9af543b721799280ba3f05cef2a93aee3d99e49ea8f6f5716536db87b8e7f3`, matching [Phala Trust Center's pinned CA](https://github.com/Phala-Network/trust-center/blob/b2cf9eff3226ed503ccab13e51747b26d37e3a5a/packages/verifier/src/verifiers/phalaCloudKmsVerifier.ts). This root pin alone does not approve a KMS workload. Rotate it together with reviewed signed policy approvals.
 
-Release hashes are lowercase SHA-256 of the exact `release.json` bytes. A signed
-artifact wrapper uses `artifact` and `bundle` string fields. Preserve the artifact
-bytes after signing. Policy snapshots use a positive sequence and bounded lifetime;
-this repository caps the generated lifetime at seven days. Revocations override
-approvals in the verifier.
+Collection requires `is_dev=false` and `allow_any_upgrade=false`. The optional `os_image_verification` field describes dstack's local reconstruction of a key requester's OS measurements; dstack calls its authorization backend separately. Phala Cloud manages that backend. A false or absent flag is not, by itself, proof that boot authorization is disabled, and the collector does not treat the flag as a compatibility requirement. Hiro verifies the KMS's own OS, hardware and code identity through `prepare-platform` and the signed policy. This does not independently verify the managed backend's key-release rules. Authentication of metadata fields relies on the authenticated connection; the independent verifier establishes the certificate and measured identity, not a signed HTTP metadata response. See [dstack's separate authorization and OS reconstruction checks](https://github.com/Dstack-TEE/dstack/blob/3c877847e71a205a1d036965b8f5d671b3740103/dstack/kms/src/main_service.rs) and [Phala's Cloud KMS governance model](https://docs.phala.com/phala-cloud/key-management/cloud-vs-onchain-kms).
 
-Use a Sigstore bundle profile actually supported by the client verifier. Successful
-GitHub image-provenance verification is a separate check and does not demonstrate
-that the SDK accepts a release-signing bundle. Establish that compatibility before
-publishing trusted releases. Never place private signing keys or credentials here.
+## Prepare platform approvals
 
-`scripts/prepare-trust` generates the final two files from pinned root bytes,
-explicit signer revisions, checkpoint origins and GitHub's numeric repository
-identities. The renderer checks their consistency with `publishers.json` and embeds
-them into Compose configs. These files are public release inputs and should be
-reviewed and committed, not treated as application secrets.
+Build the proxy with its pinned Bazel dependencies. Its `prepare-platform` command embeds upstream `dstack-verifier` at `3c877847e71a205a1d036965b8f5d671b3740103`. It verifies quote signatures and events, OS measurements against the image identity and VM configuration, and UpToDate TCB. It supports native Intel TDX 1.0 using dstack's legacy or lite measurement format. Legacy verification reconstructs measurements from a downloaded image; lite verifies the image-bound measurement document and recomputes ACPI measurements. Lite deliberately does not populate `os_image_is_dev`. In both formats, the expected OS hash must identify an independently reviewed production build; known development-image metadata is rejected. Hiro then applies its strict DCAP policy and exports exact platform measurements and a PCK PPID pin.
 
-The worker requests `/prpc/KMS.GetMeta?json` from `kms_url` and decodes the
-bootstrap envelope with upstream `dstack-attest`. It supplies `quote`, `event_log`,
-`ca_public_key`, `root_public_key` and downloaded `collateral` to the verifier.
-The KMS composition hash and app ID must match independently approved policy
-after RTMR3 replay; the KMS composition preimage is not required. Hiro's workload
-still requires its full composition for container inventory verification.
+Supply independently reviewed expected identities in a JSON file:
 
-GitHub Actions obtains account access from `PHALA_CLOUD_API_KEY`.
-The deployment workflow runs `scripts/discover-phala` with the official CLI to retrieve the account's public
-KMS keys, node URLs and selected production OS identity. `--check-trust` rejects
-keys or URLs inconsistent with the committed configuration. Its public metadata
-artifact does not replace signed platform/KMS approvals.
+```json
+{
+  "id": "kms-platform-v1",
+  "os_image_hash": "<reviewed 32-byte OS identity, lowercase hex>",
+  "app_id": "<reviewed 20-byte KMS application ID>",
+  "compose_sha256": "<reviewed 32-byte KMS composition digest>",
+  "allow_smt": false,
+  "allow_dynamic_platform": false,
+  "allow_cached_keys": false,
+  "kms": {
+    "id": "phala-kms-v1",
+    "endpoint": "https://kms.dstack-pha-prod10.phala.network",
+    "root_public_key": "<reviewed compressed secp256k1 public key>",
+    "ca_public_key_sha256": "3b9af543b721799280ba3f05cef2a93aee3d99e49ea8f6f5716536db87b8e7f3"
+  }
+}
+```
+
+Choose hardware feature allowances deliberately. Do not derive the expected OS/code identities from the same unverified evidence being checked. Review the KMS composition against the intended upstream release and configuration. A hash match establishes identity, not the safety of arbitrary code.
+
+```sh
+mkdir -p dist
+../hiro-proxy/bazel-bin/hiro-proxy collect-kms \
+  https://kms.dstack-pha-prod10.phala.network trust/kms-ca.pem dist/kms-evidence.json
+scripts/prepare-platform --verifier ../hiro-proxy/bazel-bin/hiro-proxy \
+  --evidence dist/kms-evidence.json --expected reviewed-kms.json
+```
+
+For a workload profile, omit `kms` from the expected document. Supply an evidence JSON containing `quote` (hex), `event_log` (JSON string), and `vm_config` (JSON string), obtained from its Phala attestation. Use the reviewed workload app/compose identities. The command checks these identities and installs the platform entry. A changed machine or measurement needs a new reviewed profile; existing IDs cannot silently change meaning. `HIRO_OS_IMAGE_CACHE` selects the local image cache directory.
+
+Discovery (`scripts/discover-phala`) supplies public candidate keys, endpoints and OS identities. `--check-trust` compares those candidates against committed approvals and the mounted CA. Discovery does not authorize measurements.
+
+## Bootstrap signing trust
+
+The public Sigstore roots are now committed, with SHA256 `6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66`. They were retrieved from [Sigstore's root-signing repository](https://github.com/sigstore/root-signing/blob/main/targets/trusted_root.json) and compared with the identical decoded trust root shipped in the pinned `attestation-verify` dependency. The default Rekor v1 checkpoint origin was checked against an actual checkpoint signature using that root's log key. Root or checkpoint-origin rotation requires updating these explicit pins.
+
+First publish reviewed revisions containing the reusable `.github/workflows/release.yml` and `policy.yml` and their scripts. Then dispatch **Prepare deployment signing trust** on main. It generates an artifact containing the public verifier configuration and `publish-release.yml` / `publish-policy.yml` callers pinned to that exact published revision. Download the artifact into this repository and commit the generated files. The workload subject defaults to `hiro`; bootstrap trust lasts 90 days.
+
+The same preparation can run locally with GitHub CLI authentication:
+
+```sh
+scripts/prepare-trust --signer-commit FULL_PUBLISHED_SIGNER_COMMIT
+```
+
+The command resolves the repository's numeric identities and fills evidence URLs. `--policy-commit` and `--release-commit` can pin separate revisions; `--subject`, `--not-after`, `--roots`, `--roots-sha256` and `--checkpoint-origin` override the defaults explicitly. This generates signing trust; it does not grant KMS or platform approvals.
+
+The reusable signer obtains its actual `job_workflow_sha` from GitHub's authenticated OIDC endpoint before checking out signing tools. This prevents caller inputs from selecting different code while claiming the trusted signer revision. Source/configuration and signer/tool checkouts are separate. Public repositories and GitHub-hosted runners are required by the current verification profile.
+
+A signer pin cannot refer to the commit that embeds that same pin. Pin the earlier reusable signer revision; the generated caller and release source may be newer commits. A signer rotation changes bootstrap trust and therefore the measured stack.
+
+## Provision, publish, authorize
+
+1. Run `scripts/deployment-status --bootstrap`. Configure the actual application environment, reviewed KMS/platform approvals and runtime trust. A first CVM can boot with only the KMS platform configured and no approved release; sessions remain unavailable until valid evidence is published.
+2. Provision through the deployment workflow. It retains the exact `app-compose.json`, image lock and application ID as `hiro-deployment-RUN-ATTEMPT`. If the workload platform was not yet known, verify its evidence and commit its profile, then run deployment again against that CVM using the same proxy image run.
+3. Tag the exact source commit used by a successful deployment. Dispatch **Publish measured release** (`publish-release.yml`) on that tag with its deployment run, a strictly increasing release sequence, workload platform ID and KMS ID. The signer verifies the run identity, OCI provenance and exact rendered composition before signing.
+4. The release is published as `evidence:releases/COMPOSE_SHA256.json`; an immutable copy is stored at `evidence:release-digests/RELEASE_SHA256.json`. Each wrapper retains the exact artifact and Sigstore bundle bytes. Publication uses GitHub content SHA preconditions and shared workflow concurrency.
+5. Dispatch **Publish and renew trust policy** on main with the release digest shown in the release job summary. It independently verifies that signed release before approving it. Sessions become available only when the worker and proxy verify all evidence.
+
+Policy renewal runs every six hours, increments the authenticated prior sequence, preserves revocations and minimum release floors, and verifies approved releases. It cannot renew an expired release. Release lifetime is at most seven days: republish from the same tag with a higher sequence and approve the new digest before expiry. Trust-root validity and service keyset validity also remain explicit operational limits. Protect release tags and the policy source branch according to the application's authorization policy.
+
+Validation: `python3 -m unittest discover -s tests -v`, `scripts/validate`, and `actionlint`. Proxy verification tests run through the pinned Bazel CI targets. No workflow publishes unsigned configuration as trusted evidence.
