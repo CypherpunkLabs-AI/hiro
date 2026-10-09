@@ -92,13 +92,20 @@ def main():
     write("dist/phala-public-metadata.json", metadata)
     if args.check_trust:
         runtime = read("trust/runtime.json")
-        require(isinstance(runtime["kms_url"], str)
-                and runtime["kms_url"].rstrip("/") in urls,
-                "configured KMS URL is not a Phala KMS node")
-        require(any(approval["root_public_key"] == root
-                    and approval["ca_public_key_sha256"] == metadata["kms"]["ca_public_key_sha256"]
-                    for approval in read("trust/kms.json")["kms"]),
-                "Phala KMS keys differ from the committed trust approvals")
+        errors = []
+        configured_url = runtime.get("kms_url")
+        if not isinstance(configured_url, str) or not configured_url.strip():
+            errors.append("trust/runtime.json: kms_url is unset")
+        elif configured_url.rstrip("/") not in urls:
+            errors.append("trust/runtime.json: kms_url does not match Phala's returned nodes")
+        approvals = read("trust/kms.json")["kms"]
+        if not approvals:
+            errors.append("trust/kms.json: no KMS approvals configured; discovery cannot authorize KMS measurements")
+        elif not any(approval["root_public_key"] == root
+                     and approval["ca_public_key_sha256"] == metadata["kms"]["ca_public_key_sha256"]
+                     for approval in approvals):
+            errors.append("trust/kms.json: Phala KMS keys differ from the committed trust approvals")
+        require(not errors, "; ".join(errors))
     print("Retrieved public Phala KMS keys, node URLs and production CPU OS identities.")
 
 
