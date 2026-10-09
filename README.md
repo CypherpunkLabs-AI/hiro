@@ -37,7 +37,9 @@ scripts/import-proxy-image --run "$PROXY_RUN_ID"
 `PROXY_RUN_ID` is the number in the proxy's successful GitHub Actions run URL.
 The importer downloads that run's signed metadata, verifies both its signature
 and the OCI image provenance, then updates `images.lock.json`. A running or failed
-run is rejected. The selected repository currently matches the pushed proxy's
+run is rejected. Commit the updated lock before deploying. Deployment and release
+publication use those exact pins; neither silently selects a newer build.
+The selected repository currently matches the pushed proxy's
 remote: `CypherpunkLabs-AI/hiro-gateway-test`; its registry image is
 `ghcr.io/cypherpunklabs-ai/hiro-gateway-test`.
 
@@ -65,8 +67,10 @@ scripts/prepare-trust \
   --not-after "$TRUST_EXPIRY_UNIX_SECONDS"
 ```
 
-The signer commits must identify the eventual **signing** workflows; the present
-release workflow prepares unsigned artifacts; the policy workflow signs and publishes policies. The root file is a
+The signer commits identify the immutable reusable **signing** workflows. Both
+release and policy workflows sign, verify and publish their artifacts. Generated
+callers pin those workflows by full commit SHA, and the signer checks its actual
+GitHub OIDC workflow revision before checking out tools. The root file is a
 Sigstore trusted-root JSON document, with its digest and checkpoint-origin binding
 selected independently of the CVM being verified. The proxy's `attestation-verify`
 0.1.0 dependency bundles a public-good root and documents the supported profile:
@@ -81,7 +85,7 @@ Configure these **public** URLs in `trust/runtime.json`:
 | --- | --- |
 | `release_base_url` | HTTPS directory with `<app-compose-sha256>.json`, containing signed release wrappers |
 | `policy_url` | Current signed policy wrapper |
-| `kms_url` | Phala KMS node base URL; the worker requests `/prpc/KMS.GetMeta?json` and decodes its bootstrap envelope using upstream dstack |
+| `kms_url` | Phala KMS node base URL; the worker authenticates `/prpc/KMS.GetMeta?json` with the pinned CA and verifies the actual peer's RA-TLS certificate |
 | `pccs_url` | PCCS base URL accepted by the proxy's DCAP collateral downloader |
 
 The worker refuses redirects. Each endpoint must directly serve the requested
@@ -126,14 +130,15 @@ scripts/deploy \
 This verifies registry provenance, renders the self-contained stack, validates
 Compose and required application values without printing them, and checks the
 installed CLI version. Remove `--check` to call `phala deploy`. Add
-`--cvm-id "$CVM_ID"` to update an existing CVM; omit it to create one. Optional
+`--cvm-id "$CVM_ID"` to update an existing CVM. Otherwise the committed `phala.toml`
+`cvm_id` is used; creation occurs only when neither is set. Optional
 `--node-id` selects a particular Phala node. The command uses Phala KMS, the
 explicit OS image, `--no-dev-os`, `--no-public-logs`, `--no-public-sysinfo` and
 `--wait`, following the [official CLI contract](https://docs.phala.com/phala-cloud/phala-cloud-cli/deploy).
 
 `validate.yml` calls `deploy.yml` after successful validation on every push to `main`. Pull requests only validate. The same deployment workflow remains manually dispatchable. Automatic runs obtain `PHALA_OS_IMAGE`, `PHALA_INSTANCE_TYPE`, `PHALA_REGION` and optional `PHALA_CVM_ID` from GitHub repository or organization variables; `PHALA_CLI_VERSION` defaults to the tested `1.1.22`. Secrets are inherited by the deployment job.
 
-The `deploy.yml` workflow imports and verifies the selected successful proxy CI image before invoking the same command. An empty `proxy_run` input selects the latest successful main-branch push. It checks all remaining bootstrap inputs together before provisioning. Configure GitHub secrets
+The `deploy.yml` workflow verifies the committed image's OCI provenance before invoking the same command. An optional `proxy_run` additionally checks that run's signed metadata against the exact committed lock. It checks all remaining bootstrap inputs together before provisioning. Configure GitHub secrets
 `PHALA_CLOUD_API_KEY` and `HIRO_RUNTIME_ENV` (the application env file contents),
 then supply the OS image, instance, region and CLI version in the dispatch form.
 Deployment runs are serialized. Runtime secrets are stored only in a temporary
@@ -142,6 +147,9 @@ mode-0600 file and removed on exit; they are not uploaded as artifacts.
 The current application also requires reachable PostgreSQL with its required
 schema, auth issuer configuration, the Cloudflare usage queue and Phala inference
 credentials/trust settings. Deploying containers does not provision those services.
+Automatic deployment currently permits the explicitly authorized `.env.example`
+fallback until `HIRO_RUNTIME_ENV` is supplied. This provisions a CVM, but the proxy
+cannot finish application startup with the dummy database and inference endpoints.
 
 ## Signed release and live acceptance
 
@@ -166,11 +174,15 @@ Release preparation checks that it embeds the rendered stack and records **all**
 container identities, including initialization and evidence worker containers.
 The `source-commit` here is the `hiro` release repository commit.
 
-Still required for private-traffic activation: a compatible signed release and
-release publication path, actual reviewed platform/KMS approvals and the selected
-Phala KMS endpoint. The policy workflow signs and publishes policies; the release
-workflow still produces unsigned review artifacts. After those inputs are published, the worker verifies them and refreshes
-the evidence automatically. Acceptance requires a real client SDK connection that
+Push a `v*` tag at a successfully deployed source commit to publish its signed
+release. The signer verifies the exact deployment artifact, image pins and
+composition; `trust/release.json` selects the approved workload and KMS profiles.
+Add the resulting signed-release digest to `trust/policy.json` to publish its
+authorization. Policy renewal runs every six hours. See [trust/README.md](trust/README.md)
+for initial platform appraisal, manual publication and expiration handling.
+After those inputs are published, the worker verifies them and refreshes
+the evidence automatically. Private-traffic acceptance requires real application
+configuration and a client SDK connection that
 verifies the deployed quote and completes an encrypted Oak request; `/health` alone
 is not that acceptance check.
 
