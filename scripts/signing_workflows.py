@@ -11,6 +11,8 @@ def write_callers(repository, policy_commit, release_commit):
 """
     release = """name: Publish measured release
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       deployment_run:
@@ -45,6 +47,13 @@ on:
 """
     policy = """name: Publish and renew trust policy
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'trust/policy.json'
+      - 'trust/platforms.json'
+      - 'trust/kms.json'
+      - '.github/workflows/publish-policy.yml'
   workflow_dispatch:
     inputs:
       approve_release:

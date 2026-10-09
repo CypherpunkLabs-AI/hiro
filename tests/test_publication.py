@@ -27,6 +27,18 @@ policy = load('policy', 'prepare-published-policy.py')
 
 
 class PublicationTests(unittest.TestCase):
+    def test_tag_release_discovers_only_a_successful_deployment_of_that_commit(self):
+        good = {'id': 11, 'head_sha': 'a' * 40, 'head_branch': 'main',
+                'status': 'completed', 'conclusion': 'success', 'path': '.github/workflows/deploy.yml'}
+        other = [dict(good, id=12, head_sha='b' * 40),
+                 dict(good, id=13, path='.github/workflows/policy.yml'),
+                 dict(good, id=14, conclusion='failure')]
+        with patch.object(prepare, 'api', return_value={'workflow_runs': other + [good]}):
+            self.assertEqual(prepare.find_deployment('owner/hiro', 'a' * 40, '')['id'], 11)
+        with patch.object(prepare, 'api', return_value={'workflow_runs': other}):
+            with self.assertRaisesRegex(ValueError, 'no successful deployment'):
+                prepare.find_deployment('owner/hiro', 'a' * 40, '')
+
     def test_release_reads_the_uploaded_deployment_directory_layout(self):
         with tempfile.TemporaryDirectory() as directory:
             captured = Path(directory)

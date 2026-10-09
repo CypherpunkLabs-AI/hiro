@@ -75,14 +75,16 @@ def main():
     require(args.cli_version in re.findall(r"(?<![\w.])\d+\.\d+\.\d+(?![\w.-])", version),
             "installed Phala CLI differs from --cli-version")
     project = tomllib.loads((ROOT / "phala.toml").read_text())
+    cvm_id = args.cvm_id or project.get("cvm_id")
+    require(cvm_id is None or matches(cvm_id, r"[A-Za-z0-9_-]{1,128}"), "invalid configured CVM ID")
     command = ["phala", "deploy", "--compose", str(output), "--name", project["name"],
                "--image", args.image, "--instance-type", args.instance_type, "--region", args.region,
                "--kms", "phala", "--env", str(env_file), "--no-dev-os", "--no-public-logs",
                "--no-public-sysinfo", "--wait", "--json"]
     if args.node_id:
         command.extend(["--node-id", args.node_id])
-    if args.cvm_id:
-        command.extend(["--cvm-id", args.cvm_id])
+    if cvm_id:
+        command.extend(["--cvm-id", cvm_id])
     print(shlex.join(command), flush=True)
     if not args.check:
         result = subprocess.run(command, capture_output=True, text=True, cwd=ROOT, timeout=900)

@@ -6,16 +6,16 @@ on:
         required: true
         type: string
       deployment_run:
-        required: true
+        required: false
         type: string
       sequence:
-        required: true
+        required: false
         type: string
       platform_id:
-        required: true
+        required: false
         type: string
       kms_id:
-        required: true
+        required: false
         type: string
       lifetime_seconds:
         required: false
