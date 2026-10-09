@@ -33,9 +33,10 @@ def public_hex(value, size=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--image", required=True)
+    parser.add_argument("--image", help="production OS name or slug; omit to list available production CPU images")
     parser.add_argument("--check-trust", action="store_true")
     args = parser.parse_args()
+    require(not args.check_trust or args.image, "--check-trust requires --image")
     require(bool(os.environ.get("PHALA_CLOUD_API_KEY")),
             "GitHub Actions secret PHALA_CLOUD_API_KEY is missing")
     require(not os.environ.get("DEBUG") and not os.environ.get("NODE_DEBUG"),
@@ -56,20 +57,24 @@ def main():
         urls.append(url.rstrip("/"))
     require(urls, "Phala returned no KMS nodes")
     images = query("os-images", "--prod", "--all")["items"]
-    selected = [image for image in images if args.image in (image["name"], image["slug"])]
-    require(len(selected) == 1, "requested production OS image was not uniquely found")
-    image = selected[0]
-    require(image["is_dev"] is False and image["requires_gpu"] is False,
-            "proxy requires a production CPU OS image")
+    production = [image for image in images
+                  if image["is_dev"] is False and image["requires_gpu"] is False
+                  and image.get("os_image_hash")]
+    public_images = [{"name": image["name"], "slug": image["slug"], "version": image["version"],
+                      "os_image_hash": public_hex(image["os_image_hash"], 32)}
+                     for image in production]
+    require(public_images, "Phala returned no production CPU OS images with hashes")
     metadata = {
         "schema": 1,
         "kms": {"root_public_key": root,
                 "ca_public_key_sha256": hashlib.sha256(bytes.fromhex(ca)).hexdigest(),
                 "urls": sorted(set(urls))},
-        "os_image": {"name": image["name"], "slug": image["slug"],
-                     "version": image["version"],
-                     "os_image_hash": public_hex(image["os_image_hash"], 32)},
+        "os_images": public_images,
     }
+    if args.image:
+        selected = [image for image in public_images if args.image in (image["name"], image["slug"])]
+        require(len(selected) == 1, "requested production CPU OS image was not uniquely found")
+        metadata["os_image"] = selected[0]
     write("dist/phala-public-metadata.json", metadata)
     if args.check_trust:
         runtime = read("trust/runtime.json")
@@ -80,7 +85,7 @@ def main():
                     and approval["ca_public_key_sha256"] == metadata["kms"]["ca_public_key_sha256"]
                     for approval in read("trust/kms.json")["kms"]),
                 "Phala KMS keys differ from the committed trust approvals")
-    print("Retrieved public Phala KMS keys, node URLs and selected production OS identity.")
+    print("Retrieved public Phala KMS keys, node URLs and production CPU OS identities.")
 
 
 if __name__ == "__main__":

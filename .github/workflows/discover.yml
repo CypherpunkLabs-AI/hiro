@@ -1,0 +1,35 @@
+name: Discover Phala deployment metadata
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/discover.yml
+      - scripts/discover-phala
+permissions:
+  contents: read
+jobs:
+  discover:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          persist-credentials: false
+      - name: Install pinned tools
+        run: |
+          npm install --global phala@1.1.22
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r scripts/requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Read public Phala deployment metadata
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: scripts/discover-phala
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: phala-public-metadata-${{ github.run_id }}
+          path: dist/phala-public-metadata.json
+          if-no-files-found: error
+          retention-days: 7
