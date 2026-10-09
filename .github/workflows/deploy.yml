@@ -59,6 +59,11 @@ jobs:
           arguments=()
           if [[ -n "$PROXY_RUN" ]]; then arguments+=(--run "$PROXY_RUN"); fi
           scripts/import-proxy-image "${arguments[@]}"
+      - name: Retrieve Phala metadata and verify configured KMS trust
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          OS_IMAGE: ${{ inputs.os_image }}
+        run: scripts/discover-phala --image "$OS_IMAGE" --check-trust
       - name: Check all repository deployment inputs before provisioning
         run: scripts/deployment-status --bootstrap
       - name: Validate, verify and deploy
@@ -74,7 +79,6 @@ jobs:
         run: |
           test -n "$PHALA_CLOUD_API_KEY"
           test -n "$RUNTIME_ENV"
-          scripts/discover-phala --image "$OS_IMAGE" --check-trust
           umask 077
           env_file="$(mktemp "$RUNNER_TEMP/hiro-env.XXXXXX")"
           trap 'rm -f -- "$env_file"' EXIT

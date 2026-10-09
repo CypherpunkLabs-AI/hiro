@@ -49,7 +49,7 @@ after RTMR3 replay; the KMS composition preimage is not required. Hiro's workloa
 still requires its full composition for container inventory verification.
 
 GitHub Actions obtains account access from `PHALA_CLOUD_API_KEY`.
-`scripts/discover-phala` uses the official CLI to retrieve the account's public
+The deployment workflow runs `scripts/discover-phala` with the official CLI to retrieve the account's public
 KMS keys, node URLs and selected production OS identity. `--check-trust` rejects
 keys or URLs inconsistent with the committed configuration. Its public metadata
 artifact does not replace signed platform/KMS approvals.
