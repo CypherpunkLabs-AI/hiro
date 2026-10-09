@@ -9,12 +9,16 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
+import urllib.error
+from urllib.parse import quote, urlsplit
 
 import yaml
 
 from hiro import ROOT, matches, rendered, require, write
+from phala_api import query
 
 
 def verify_cli_version(reported, expected):
@@ -22,6 +26,44 @@ def verify_cli_version(reported, expected):
     version = re.fullmatch(r"v?(\d+\.\d+\.\d+)(?:\+[0-9a-f]{7,40})?", reported.strip())
     require(version is not None and version.group(1) == expected,
             f"installed Phala CLI differs from --cli-version: {reported[:100]!r}")
+
+
+def existing_cvm(name):
+    try:
+        info = query("cvms/" + quote(name, safe=""))
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
+    require(info.get("name") == name, "Phala returned a different named CVM")
+    cvm_id = info.get("vm_uuid") or info.get("id")
+    require(matches(cvm_id, r"[A-Za-z0-9_-]{1,128}"), "Phala returned an invalid existing CVM ID")
+    return cvm_id
+
+
+def cli_diagnostic(result, env_text):
+    text = result.stderr or result.stdout
+    values = [os.environ.get("PHALA_CLOUD_API_KEY", "")]
+    for line in env_text.splitlines():
+        if line.strip() and not line.lstrip().startswith("#") and "=" in line:
+            value = line.split("=", 1)[1].strip().strip("\"'")
+            values.append(value)
+            if "://" in value:
+                parsed = urlsplit(value)
+                values.extend((parsed.username or "", parsed.password or ""))
+    for value in sorted(set(values), key=len, reverse=True):
+        if value:
+            text = text.replace(value, "[redacted]")
+    return text[-4000:]
+
+
+def invoke_deployment(command, project):
+    # Phala treats phala.toml's name as an existing-CVM selector. Keep the
+    # repository's deployment name out of its implicit ID resolution.
+    with tempfile.TemporaryDirectory(prefix="hiro-phala-") as directory:
+        config = {key: project[key] for key in ("gateway_port", "gateway_domain") if key in project}
+        Path(directory, "phala.toml").write_text("".join(f"{key} = {json.dumps(value)}\n" for key, value in config.items()))
+        return subprocess.run(command, capture_output=True, text=True, cwd=directory, timeout=900)
 
 
 def capture_composition(cvm_id, compose):
@@ -83,6 +125,10 @@ def main():
     project = tomllib.loads((ROOT / "phala.toml").read_text())
     cvm_id = args.cvm_id or project.get("cvm_id")
     require(cvm_id is None or matches(cvm_id, r"[A-Za-z0-9_-]{1,128}"), "invalid configured CVM ID")
+    if cvm_id is None and not args.check:
+        cvm_id = existing_cvm(project["name"])
+        if cvm_id:
+            print(f"Updating existing named CVM {cvm_id}", flush=True)
     command = ["phala", "deploy", "--compose", str(output), "--name", project["name"],
                "--image", args.image, "--instance-type", args.instance_type, "--region", args.region,
                "--kms", "phala", "--env", str(env_file), "--no-dev-os", "--no-public-logs",
@@ -93,9 +139,9 @@ def main():
         command.extend(["--cvm-id", cvm_id])
     print(shlex.join(command), flush=True)
     if not args.check:
-        result = subprocess.run(command, capture_output=True, text=True, cwd=ROOT, timeout=900)
+        result = invoke_deployment(command, project)
         require(result.returncode == 0,
-                "Phala deployment failed; inspect the CVM in the Cloud dashboard before retrying creation")
+                "Phala deployment failed; inspect the CVM before retrying creation. " + cli_diagnostic(result, env_text))
         require(len(result.stdout.encode()) <= 1024 * 1024, "Phala deployment result exceeds limit")
         deployed = json.loads(result.stdout)
         require(deployed.get("success") is True, "Phala did not confirm deployment")
