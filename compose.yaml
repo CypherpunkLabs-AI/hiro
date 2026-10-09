@@ -1,162 +1,38 @@
-# Release template. scripts/render-compose inserts immutable images from images.lock.json.
-# All three services use the proxy repository's single published image.
+# Assembled by scripts/render-compose. The measured guest launcher owns the two mounts.
 services:
-  volume-init:
-    x-hiro-image: hiro-proxy
-    image: ${HIRO_PROXY_IMAGE:?render with scripts/render-compose}
-    user: "0:0"
-    entrypoint: ["/bin/sh", "-ec"]
-    command:
-      - >-
-        chown 65532:65532 /socket /evidence /proxy-state /worker-state &&
-        chmod 0700 /socket /evidence /proxy-state /worker-state
-    volumes:
-      - evidence-socket:/socket
-      - evidence:/evidence
-      - proxy-state:/proxy-state
-      - worker-state:/worker-state
-    network_mode: none
-    read_only: true
-    cap_drop: [ALL]
-    cap_add: [CHOWN, FOWNER]
-    security_opt: ["no-new-privileges:true"]
-    pids_limit: 16
-    mem_limit: 32m
-    restart: "no"
   hiro-proxy:
     x-hiro-image: hiro-proxy
     image: ${HIRO_PROXY_IMAGE:?render with scripts/render-compose}
-    depends_on:
-      volume-init:
-        condition: service_completed_successfully
-    ports:
-      - "8080:8080"
+    user: "65532:65532"
+    ports: ["8080:8080"]
     environment:
       HIRO_BIND_ADDRESS: 0.0.0.0:8080
-      AUTH_ISSUER: ${AUTH_ISSUER:?required}
-      AUTH_AUTHORIZED_PARTIES: ${AUTH_AUTHORIZED_PARTIES:?required}
-      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-}
-      AUTH_JWT_KEY: ${AUTH_JWT_KEY:-}
-      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-}
-      AUTH_JWKS_CACHE_SECONDS: ${AUTH_JWKS_CACHE_SECONDS:-3600}
+      HIRO_TDX_REPORT_DIR: /run/hiro/tdx-report
+      HIRO_ATTESTATION_DIR: /run/hiro/attestation
       DATABASE_URL: ${DATABASE_URL:?required}
       CACHE_NAMESPACE_KEY: ${CACHE_NAMESPACE_KEY:?required}
-      INFERENCE_SYSTEM_PROMPT: ${INFERENCE_SYSTEM_PROMPT:?required}
-      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:?required}
-      CLOUDFLARE_USAGE_QUEUE_ID: ${CLOUDFLARE_USAGE_QUEUE_ID:?required}
+      PHALA_API_KEY: ${PHALA_API_KEY:?required}
       CLOUDFLARE_QUEUES_API_TOKEN: ${CLOUDFLARE_QUEUES_API_TOKEN:?required}
       USAGE_HMAC_SECRET: ${USAGE_HMAC_SECRET:?required}
-      DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-20}
-      INFERENCE_TEMPERATURE: ${INFERENCE_TEMPERATURE:-0.7}
-      INFERENCE_MAX_TOKENS: ${INFERENCE_MAX_TOKENS:-32000}
-      INFERENCE_MAX_CONCURRENCY: ${INFERENCE_MAX_CONCURRENCY:-1000}
-      DSTACK_ENDPOINT: /var/run/dstack.sock
-      PHALA_ACI_BASE_URL: ${PHALA_ACI_BASE_URL:?required}
-      PHALA_API_KEY: ${PHALA_API_KEY:?required}
-      PHALA_ACI_ACCEPTED_SUBJECTS: ${PHALA_ACI_ACCEPTED_SUBJECTS:?required}
-      PHALA_ACI_ACCEPTED_KMS_ROOT_KEYS: ${PHALA_ACI_ACCEPTED_KMS_ROOT_KEYS:?required}
-      PHALA_ACI_PCCS_URL: ${PHALA_ACI_PCCS_URL:-}
-      PHALA_ACI_VERIFIER_CACHE_SECONDS: "300"
-      PHALA_CONNECT_TIMEOUT_SECONDS: "10"
-      PHALA_ATTESTATION_TIMEOUT_SECONDS: "20"
-      PHALA_READ_TIMEOUT_SECONDS: "600"
-      HIRO_KEYSET_TTL_SECONDS: "2592000"
-      HIRO_RECEIPT_TTL_SECONDS: "3600"
-      HIRO_SOURCE_REPOSITORY: https://github.com/cypherpunklabs-ai/hiro-proxy
-      HIRO_SOURCE_COMMIT: ${HIRO_SOURCE_COMMIT:?required}
-      HIRO_IMAGE_DIGEST: ${HIRO_IMAGE_DIGEST:?required}
-      HIRO_EVIDENCE_SOCKET: /run/hiro-socket/evidence.sock
-      HIRO_OAK_EVIDENCE_PATH: /run/hiro-evidence/evidence.json
-      HIRO_EVIDENCE_STATE_DIR: /var/lib/hiro-verification
-      HIRO_TRUST_CONFIG_PATH: /etc/hiro-trust.json
-      HIRO_SIGSTORE_ROOTS_PATH: /etc/hiro-sigstore-roots.json
-      HIRO_ATTESTED_SUBJECT: ${HIRO_ATTESTED_SUBJECT:?required}
       RUST_LOG: hiro_proxy=info
     volumes:
-      - evidence-socket:/run/hiro-socket
-      - evidence:/run/hiro-evidence:ro
-      - proxy-state:/var/lib/hiro-verification
-      - /var/run/dstack.sock:/var/run/dstack.sock:ro
-    configs:
-      - source: verifier-trust
-        target: /etc/hiro-trust.json
-      - source: sigstore-roots
-        target: /etc/hiro-sigstore-roots.json
-    networks:
-      - default
-      - hiro-confidential
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,noexec,nosuid,nodev
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    pids_limit: 128
-    mem_limit: 2g
-    restart: unless-stopped
-
-  evidence-worker:
-    x-hiro-image: hiro-proxy
-    image: ${HIRO_PROXY_IMAGE:?render with scripts/render-compose}
-    command: [evidence]
-    depends_on:
-      volume-init:
-        condition: service_completed_successfully
-    environment:
-      HIRO_EVIDENCE_SOCKET: /run/hiro-socket/evidence.sock
-      HIRO_OAK_EVIDENCE_PATH: /run/hiro-evidence/evidence.json
-      HIRO_EVIDENCE_STATE_DIR: /var/lib/hiro-verification
-      HIRO_TRUST_CONFIG_PATH: /etc/hiro-trust.json
-      HIRO_SIGSTORE_ROOTS_PATH: /etc/hiro-sigstore-roots.json
-      # scripts/render-compose inserts reviewed public URLs from trust/runtime.json.
-      HIRO_RELEASE_BASE_URL: ${HIRO_RELEASE_BASE_URL:?render with scripts/render-compose}
-      HIRO_POLICY_URL: ${HIRO_POLICY_URL:?render with scripts/render-compose}
-      HIRO_KMS_URL: ${HIRO_KMS_URL:?render with scripts/render-compose}
-      HIRO_KMS_CA_PATH: /etc/hiro-kms-ca.pem
-      HIRO_PCCS_URL: ${HIRO_PCCS_URL:?render with scripts/render-compose}
-      RUST_LOG: hiro_proxy=info
-    volumes:
-      - evidence-socket:/run/hiro-socket:ro
-      - evidence:/run/hiro-evidence
-      - worker-state:/var/lib/hiro-verification
-    configs:
-      - source: verifier-trust
-        target: /etc/hiro-trust.json
-      - source: sigstore-roots
-        target: /etc/hiro-sigstore-roots.json
-      - source: kms-ca
-        target: /etc/hiro-kms-ca.pem
-    healthcheck:
-      test: [CMD, /usr/local/bin/hiro-proxy, evidence-health]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 120s
+      - type: bind
+        source: /sys/kernel/config/tsm/report/hiro-proxy
+        target: /run/hiro/tdx-report
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /run/hiro/attestation
+        target: /run/hiro/attestation
+        read_only: true
+        bind:
+          create_host_path: false
     read_only: true
     tmpfs: ["/tmp:size=16m,noexec,nosuid,nodev"]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    pids_limit: 64
-    mem_limit: 512m
+    ulimits:
+      core: {soft: 0, hard: 0}
+    pids_limit: 128
+    mem_limit: 2g
     restart: unless-stopped
-
-volumes:
-  evidence-socket:
-  evidence:
-  proxy-state:
-  worker-state:
-
-# Rendering replaces local file references with literal public config contents.
-# The CVM receives a self-contained Compose document.
-configs:
-  verifier-trust:
-    file: ./trust/verifier.json
-  sigstore-roots:
-    file: ./trust/sigstore-roots.json
-  kms-ca:
-    file: ./trust/kms-ca.pem
-
-networks:
-  hiro-confidential:
-    internal: true

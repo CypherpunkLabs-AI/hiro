@@ -9,6 +9,3 @@ dist/
 .local/
 *.pem
 *.key
-
-# Reviewed public KMS trust anchor (never a private key).
-!trust/kms-ca.pem

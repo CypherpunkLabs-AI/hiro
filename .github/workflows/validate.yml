@@ -1,4 +1,4 @@
-name: Validate and deploy
+name: Validate release configuration
 on:
   pull_request:
   push:
@@ -27,16 +27,3 @@ jobs:
         run: |
           scripts/validate
           python3 -m unittest discover -s tests -v
-  deploy:
-    needs: validate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/deploy.yml
-    with:
-      # Operator-authorized test fallback until removed; real runtime secrets take precedence.
-      use_example_env: true
-      os_image: ${{ vars.PHALA_OS_IMAGE }}
-      instance_type: ${{ vars.PHALA_INSTANCE_TYPE }}
-      region: ${{ vars.PHALA_REGION }}
-      cli_version: ${{ vars.PHALA_CLI_VERSION || '1.1.22' }}
-      cvm_id: ${{ vars.PHALA_CVM_ID }}
-    secrets: inherit

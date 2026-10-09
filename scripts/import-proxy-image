@@ -1,28 +1,23 @@
 #!/usr/bin/env python3
-"""Import the signed image lock from a successful proxy CI run."""
+"""Import verified proxy metadata from a successful CI run or versioned release."""
 import argparse
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
-
-from hiro import ROOT, matches, read, require, write
+from hiro import ROOT, PROFILE, matches, read, require, write
 
 
 def gh_json(*arguments):
     return json.loads(subprocess.check_output(["gh", *arguments], text=True))
 
 
-def verify(subject, repository, commit, bundle=None):
-    command = [
-        "gh", "attestation", "verify", subject, "--repo", repository,
-        "--signer-workflow", repository + "/.github/workflows/ci.yml",
-        "--signer-digest", commit, "--source-digest", commit,
-        "--source-ref", "refs/heads/main",
-        "--predicate-type", "https://slsa.dev/provenance/v1",
-        "--deny-self-hosted-runners",
-    ]
+def verify(subject, repository, commit, ref, bundle=None):
+    command = ["gh", "attestation", "verify", subject, "--repo", repository,
+               "--signer-workflow", repository + "/.github/workflows/ci.yml",
+               "--signer-digest", commit, "--source-digest", commit, "--source-ref", ref,
+               "--predicate-type", "https://slsa.dev/provenance/v1", "--deny-self-hosted-runners"]
     if bundle:
         command.extend(["--bundle", str(bundle)])
     subprocess.run(command, check=True)
@@ -30,59 +25,61 @@ def verify(subject, repository, commit, bundle=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run", type=int, help="successful proxy Actions run ID; defaults to latest successful main push")
-    parser.add_argument("--check", action="store_true", help="require the published image to equal the committed lock without changing it")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--run", type=int, help="successful main-branch CI run; defaults to latest")
+    source.add_argument("--release", help="published version, e.g. v0.1.0")
+    parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     lock = read("images.lock.json")
     expected = lock["services"]["hiro-proxy"]
     repository = expected["source_repository"]
     require(matches(repository, r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"), "invalid source repository")
-    if args.run is None:
-        runs = gh_json("api", f"repos/{repository}/actions/workflows/ci.yml/runs"
-                       "?branch=main&event=push&status=success&per_page=1")["workflow_runs"]
-        require(bool(runs), "no successful proxy publishing run found")
-        args.run = runs[0]["id"]
-    require(args.run > 0, "run ID must be positive")
-    run = gh_json("api", f"repos/{repository}/actions/runs/{args.run}")
-    require(run["status"] == "completed" and run["conclusion"] == "success",
-            "proxy CI must finish successfully before its image can be imported")
-    require(run["event"] == "push" and run["head_branch"] == "main"
-            and run["path"] == ".github/workflows/ci.yml", "unexpected publishing workflow or ref")
-    require(run["repository"]["full_name"].lower() == repository.lower(), "unexpected run repository")
-    commit = run["head_sha"]
-    require(matches(commit, r"[0-9a-f]{40}"), "invalid source commit")
     with tempfile.TemporaryDirectory(prefix="hiro-image-") as directory:
-        artifact = f"hiro-proxy-image-{commit}-{run['run_attempt']}"
-        subprocess.run(["gh", "run", "download", str(args.run), "--repo", repository,
-                        "--name", artifact, "--dir", directory], check=True)
         path = Path(directory)
-        verify(str(path / "images.lock.json"), repository, commit,
-               path / "images.lock.sigstore.json")
+        if args.release:
+            require(matches(args.release, r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?"), "invalid version")
+            release = gh_json("api", f"repos/{repository}/releases/tags/{args.release}")
+            require(not release["draft"] and release["tag_name"] == args.release, "release is not published")
+            commit = gh_json("api", f"repos/{repository}/commits/{args.release}")["sha"]
+            ref = "refs/tags/" + args.release
+            subprocess.run(["gh", "release", "download", args.release, "--repo", repository,
+                            "--pattern", "images.lock*", "--dir", directory], check=True)
+        else:
+            if args.run is None:
+                runs = gh_json("api", f"repos/{repository}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1")["workflow_runs"]
+                require(bool(runs), "no successful proxy publishing run")
+                args.run = runs[0]["id"]
+            require(args.run > 0, "invalid run ID")
+            run = gh_json("api", f"repos/{repository}/actions/runs/{args.run}")
+            require(run["status"] == "completed" and run["conclusion"] == "success", "proxy CI must succeed")
+            require(run["event"] == "push" and run["head_branch"] == "main" and run["path"] == ".github/workflows/ci.yml", "unexpected publishing workflow")
+            require(run["repository"]["full_name"].lower() == repository.lower(), "unexpected repository")
+            commit, ref = run["head_sha"], "refs/heads/main"
+            subprocess.run(["gh", "run", "download", str(args.run), "--repo", repository, "--name",
+                            f"hiro-proxy-image-{commit}-{run['run_attempt']}", "--dir", directory], check=True)
+        require(matches(commit, r"[0-9a-f]{40}"), "invalid source revision")
+        verify(str(path / "images.lock.json"), repository, commit, ref, path / "images.lock.sigstore.json")
         published = json.loads((path / "images.lock.json").read_text())
-        require(published.get("schema") == 1 and set(published["services"]) == {"hiro-proxy"},
-                "unexpected published lock schema/services")
+        require(published.get("schema") == 1 and set(published["services"]) == {"hiro-proxy"}, "unexpected image lock")
         image = published["services"]["hiro-proxy"]
-        require(image["image"] == expected["image"] and
-                image["source_repository"].lower() == repository.lower(), "published image identity mismatch")
-        require(image["source_commit"] == commit and image["workflow_commit"] == commit
-                and image["source_ref"] == "refs/heads/main"
-                and image["build_workflow"] == ".github/workflows/ci.yml", "published build identity mismatch")
+        require(image["image"] == expected["image"] and image["source_repository"].lower() == repository.lower(), "unexpected image identity")
+        require(image["source_commit"] == image["workflow_commit"] == commit and image["source_ref"] == ref
+                and image["build_workflow"] == ".github/workflows/ci.yml", "unexpected build identity")
+        require(image.get("runtime_profile") == PROFILE, "image uses an incompatible runtime profile")
         require(matches(image["digest"], r"sha256:[0-9a-f]{64}"), "invalid OCI digest")
+        verify("oci://" + image["image"] + "@" + image["digest"], repository, commit, ref)
         if args.check:
-            require(image == expected, "published image differs from the committed lock; import and commit it before deployment")
-        verify("oci://" + image["image"] + "@" + image["digest"], repository, commit)
-        if args.check:
-            print("Published image and provenance match the committed lock.")
+            require(image == expected, "published image differs from committed lock")
+            print("Published image matches the committed lock")
             return
         lock["services"]["hiro-proxy"] = image
-        # Both the metadata artifact and OCI provenance have now been verified.
         temporary = ROOT / "images.lock.json.tmp"
         try:
             write(temporary, lock)
             temporary.replace(ROOT / "images.lock.json")
         finally:
             temporary.unlink(missing_ok=True)
-    print(f"Locked {image['image']}@{image['digest']}")
+        print(f"Locked {image['image']}@{image['digest']}")
 
 
 if __name__ == "__main__":

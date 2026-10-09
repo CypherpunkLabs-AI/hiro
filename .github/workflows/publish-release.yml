@@ -1,40 +1,61 @@
-name: Publish measured release
+name: Publish GCP TDX Compose release
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
-      deployment_run:
-        description: Successful deployment run for this exact tag commit
-        required: true
+      proxy_version:
+        description: Optional proxy version to import (otherwise use the committed image lock)
         type: string
-      sequence:
-        description: Monotonically increasing release sequence
-        required: true
-        type: string
-      platform_id:
-        required: true
-        type: string
-      kms_id:
-        required: true
-        type: string
-      lifetime_seconds:
-        required: true
-        type: string
-        default: '604800'
 permissions:
   contents: write
-  id-token: write
-  attestations: write
   packages: read
+  attestations: write
+  id-token: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    uses: CypherpunkLabs-AI/hiro/.github/workflows/release.yml@faa4a7f1f91ea91c3e6cf4dbc530f33779db4b59
-    with:
-      signer_commit: faa4a7f1f91ea91c3e6cf4dbc530f33779db4b59
-      deployment_run: ${{ inputs.deployment_run }}
-      sequence: ${{ inputs.sequence }}
-      platform_id: ${{ inputs.platform_id }}
-      kms_id: ${{ inputs.kms_id }}
-      lifetime_seconds: ${{ inputs.lifetime_seconds }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+        with:
+          persist-credentials: false
+      - name: Install release tooling
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r scripts/requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Import requested proxy version
+        if: inputs.proxy_version != ''
+        env:
+          PROXY_VERSION: ${{ inputs.proxy_version }}
+        run: scripts/import-proxy-image --release "$PROXY_VERSION"
+      - name: Verify images and assemble exact release bytes
+        run: |
+          scripts/verify-images
+          scripts/prepare-release --source-commit "$GITHUB_SHA" --tag "$GITHUB_REF_NAME"
+      - name: Sign the measured release
+        id: signature
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: dist/release.json
+      - name: Verify and publish
+        env:
+          BUNDLE: ${{ steps.signature.outputs.bundle-path }}
+          WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+        run: |
+          cp -- "$BUNDLE" dist/release.sigstore.json
+          gh attestation verify dist/release.json --bundle dist/release.sigstore.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-release.yml" \
+            --signer-digest "$WORKFLOW_COMMIT" --source-digest "$GITHUB_SHA" \
+            --source-ref "$GITHUB_REF" --predicate-type https://slsa.dev/provenance/v1 \
+            --deny-self-hosted-runners
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --target "$GITHUB_SHA" \
+            --title "$GITHUB_REF_NAME" --notes 'Signed Compose release for the Hiro GCP TDX measured guest.'

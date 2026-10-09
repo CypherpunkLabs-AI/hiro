@@ -1,8 +1,0 @@
-{
-  "kms_ca_path": "/etc/hiro-kms-ca.pem",
-  "kms_url": "https://kms.dstack-pha-prod10.phala.network",
-  "pccs_url": "https://pccs.phala.network",
-  "policy_url": "https://raw.githubusercontent.com/CypherpunkLabs-AI/hiro/evidence/policy.json",
-  "release_base_url": "https://raw.githubusercontent.com/CypherpunkLabs-AI/hiro/evidence/releases/",
-  "schema": 1
-}
