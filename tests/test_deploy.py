@@ -4,7 +4,6 @@ import runpy
 import sys
 import unittest
 from unittest.mock import patch
-import urllib.error
 from types import SimpleNamespace
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
@@ -22,19 +21,21 @@ class DeployTests(unittest.TestCase):
         with patch('subprocess.run', side_effect=invoke):
             deploy['invoke_deployment'](['phala', 'deploy'], {'name': 'hiro-cvm', 'gateway_port': 8080})
 
-    def test_existing_name_lookup_reuses_the_cvm_and_only_404_allows_creation(self):
+    def test_existing_name_lookup_uses_the_authenticated_inventory(self):
         function = deploy['existing_cvm']
-        with patch.dict(function.__globals__, query=lambda path: {'name': 'hiro-cvm', 'vm_uuid': 'existing-id'}):
+        instance = {'name': 'hiro-cvm', 'vm_uuid': 'existing-id'}
+        with patch.dict(function.__globals__, query=lambda path: {'items': [instance], 'pages': 1}):
             self.assertEqual(function('hiro-cvm'), 'existing-id')
-        for code in (403, 404):
-            def error(path):
-                raise urllib.error.HTTPError('https://cloud-api.phala.com', code, 'error', {}, None)
-            with patch.dict(function.__globals__, query=error):
-                if code == 404:
-                    self.assertIsNone(function('hiro-cvm'))
-                else:
-                    with self.assertRaises(urllib.error.HTTPError):
-                        function('hiro-cvm')
+        with patch.dict(function.__globals__, query=lambda path: {'items': [], 'pages': 0}):
+            self.assertIsNone(function('hiro-cvm'))
+        with patch.dict(function.__globals__, query=lambda path: {'items': [instance, instance], 'pages': 1}):
+            with self.assertRaisesRegex(ValueError, 'multiple CVMs'):
+                function('hiro-cvm')
+        def error(path):
+            raise ValueError('HTTP 403')
+        with patch.dict(function.__globals__, query=error):
+            with self.assertRaisesRegex(ValueError, 'HTTP 403'):
+                function('hiro-cvm')
 
     def test_cli_diagnostics_redact_application_and_control_plane_credentials(self):
         result = SimpleNamespace(stderr='failed private-password token-control token-application', stdout='')

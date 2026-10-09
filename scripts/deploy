@@ -12,8 +12,7 @@ import sys
 import tempfile
 import time
 import tomllib
-import urllib.error
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -29,13 +28,21 @@ def verify_cli_version(reported, expected):
 
 
 def existing_cvm(name):
-    try:
-        info = query("cvms/" + quote(name, safe=""))
-    except urllib.error.HTTPError as error:
-        if error.code == 404:
-            return None
-        raise
-    require(info.get("name") == name, "Phala returned a different named CVM")
+    # A direct lookup of an unknown name can return 403. Only the authenticated
+    # inventory establishes that this workspace has no matching deployment.
+    found = []
+    for page in range(1, 101):
+        inventory = query(f"cvms/paginated?page={page}&page_size=100")
+        require(isinstance(inventory.get("items"), list), "invalid Phala CVM inventory")
+        found.extend(item for item in inventory["items"] if item.get("name") == name and not item.get("deleted_at"))
+        pages = inventory.get("pages")
+        require(type(pages) is int and 0 <= pages <= 100, "CVM inventory pagination requires an explicit CVM ID")
+        if page >= pages:
+            break
+    require(len(found) <= 1, "multiple CVMs have the deployment name; configure an explicit CVM ID")
+    if not found:
+        return None
+    info = found[0]
     cvm_id = info.get("vm_uuid") or info.get("id")
     require(matches(cvm_id, r"[A-Za-z0-9_-]{1,128}"), "Phala returned an invalid existing CVM ID")
     return cvm_id
