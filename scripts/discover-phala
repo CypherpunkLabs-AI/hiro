@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from urllib.parse import urlsplit
@@ -11,10 +12,23 @@ from urllib.parse import urlsplit
 from hiro import ROOT, matches, read, require, write
 
 
+def diagnostic(result):
+    """Retain CLI errors without exposing runner credentials or log commands."""
+    detail = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    for name, value in os.environ.items():
+        if value and any(word in name.upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD", "RUNTIME_ENV")):
+            for encoded in (value, json.dumps(value)[1:-1]):
+                detail = detail.replace(encoded, "[REDACTED]")
+    detail = re.sub(r"(?i)(Bearer\s+)[^\s\"']+", r"\1[REDACTED]", detail)
+    # JSON quoting escapes newlines/control characters, including Actions commands.
+    return json.dumps(detail[:6000] or "CLI returned no diagnostic output")
+
+
 def query(*arguments):
     result = subprocess.run(["phala", *arguments, "--json"], capture_output=True,
                             text=True, timeout=90)
-    require(result.returncode == 0, f"Phala {' '.join(arguments)} failed; check account access")
+    require(result.returncode == 0,
+            f"Phala {' '.join(arguments)} failed (exit {result.returncode}): {diagnostic(result)}")
     value = json.loads(result.stdout)
     # CLI JSON success envelopes retain the API response in data.
     if isinstance(value, dict) and value.get("success") is True and "data" in value:
