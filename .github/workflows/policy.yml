@@ -44,7 +44,7 @@ jobs:
           POLICY_BUNDLE: ${{ steps.signature.outputs.bundle-path }}
           WORKFLOW_COMMIT: ${{ github.workflow_sha }}
         run: python3 scripts/publish-policy.py
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: hiro-policy-${{ github.run_id }}
           path: dist/signed-policy.json
