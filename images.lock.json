@@ -3,12 +3,13 @@
   "services": {
     "hiro-proxy": {
       "build_workflow": ".github/workflows/ci.yml",
-      "digest": "sha256:22f5757d94a6a616848abc8f7e2293c3a6329595d1345c01c2af8a5ba362270a",
+      "digest": "sha256:68d1062af24c5d886d878b92c61b7eadc01fc9ffa7d94991394544a23c11fb94",
       "image": "ghcr.io/cypherpunklabs-ai/hiro-gateway-test",
-      "source_commit": "b8b3c479a59b3d9e30dacf1db827d1619a8fcd2b",
+      "runtime_profile": "hiro.gcp-tdx.v1",
+      "source_commit": "84d90f892efe5d20df5f4d6fcd50b9b415c1d002",
       "source_ref": "refs/heads/main",
       "source_repository": "CypherpunkLabs-AI/hiro-gateway-test",
-      "workflow_commit": "b8b3c479a59b3d9e30dacf1db827d1619a8fcd2b"
+      "workflow_commit": "84d90f892efe5d20df5f4d6fcd50b9b415c1d002"
     }
   }
 }

@@ -1,0 +1,2 @@
+tmpfs /var tmpfs nosuid,nodev,mode=0755,size=60% 0 0
+tmpfs /tmp tmpfs nosuid,nodev,noexec,mode=1777,size=64M 0 0

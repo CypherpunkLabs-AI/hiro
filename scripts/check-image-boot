@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Boot the release disk under UEFI; missing TDX must never attest."""
+import json
+import os
+import socket
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from hiro import ROOT, require
+
+dist = ROOT / 'dist'
+with socket.socket() as s:
+    s.bind(('127.0.0.1', 0))
+    port = s.getsockname()[1]
+command = ['qemu-system-x86_64', '-machine', 'q35', '-m', '6144', '-smp', '2',
+           '-bios', os.environ['HIRO_OVMF'], '-drive', f'file={dist}/image/hiro.raw,format=raw,if=virtio,snapshot=on',
+           '-netdev', f'user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:8080',
+           '-device', 'virtio-net-pci,netdev=net0', '-display', 'none', '-monitor', 'none', '-serial', 'stdio']
+if os.access('/dev/kvm', os.R_OK | os.W_OK):
+    command += ['-accel', 'kvm', '-cpu', 'host']
+else:
+    command += ['-accel', 'tcg', '-cpu', 'max']
+def status(path):
+    try:
+        with urllib.request.urlopen(f'http://127.0.0.1:{port}' + path, timeout=3) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+with (dist / 'boot.log').open('wb') as log:
+    vm = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+    try:
+        deadline = time.monotonic() + 420
+        while time.monotonic() < deadline:
+            require(vm.poll() is None, 'UEFI guest exited; see boot.log')
+            try:
+                if status('/health') == 200:
+                    break
+            except (OSError, TimeoutError):
+                pass
+            time.sleep(3)
+        else:
+            raise ValueError('Embedded proxy did not start within 7 minutes; see boot.log')
+        require(status('/ready') == 503, 'Non-TDX VM unexpectedly became attestation-ready')
+        require(status('/v1/attestation?nonce=' + '01' * 32) == 503, 'Non-TDX VM supplied accepted evidence')
+        require(status('/v3/chat/completions') == 404, 'Plaintext application route exposed')
+        (dist / 'boot-check.json').write_text(json.dumps({
+            'uefi_boot': 'passed', 'embedded_proxy_health': 200,
+            'non_tdx_ready': 503, 'non_tdx_attestation': 503,
+            'hardware_attestation': 'requires deployment on Intel TDX',
+        }, indent=2) + '\n')
+        print('UEFI boot and embedded proxy startup passed; non-TDX evidence correctly rejected')
+    finally:
+        vm.terminate()
+        try:
+            vm.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            vm.kill()
+            vm.wait()

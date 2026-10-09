@@ -1,0 +1,16 @@
+[Unit]
+Description=Embedded Hiro confidential proxy
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/hiro/start
+TimeoutStartSec=300
+LimitCORE=0
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

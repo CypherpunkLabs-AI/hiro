@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Validate the UKI/verity disk and publish its independent, non-circular manifest."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
+from hiro import ROOT, require
+
+
+def run(*args, **kw):
+    return subprocess.run(args, check=True, **kw)
+
+
+def digest(path):
+    with path.open('rb') as f:
+        return hashlib.file_digest(f, 'sha256').hexdigest()
+
+
+dist = ROOT / 'dist'
+disk = dist / 'image/hiro.raw'
+table = json.loads(subprocess.check_output(['sfdisk', '--json', str(disk)]))['partitiontable']
+require(table['label'] == 'gpt', 'GCP image must be GPT/UEFI bootable')
+parts = table['partitions']
+def part(guid):
+    matches = [p for p in parts if p['type'].lower() == guid]
+    require(len(matches) == 1, 'Missing or duplicate disk partition ' + guid)
+    return matches[0]
+esp = part('c12a7328-f81f-11d2-ba4b-00a0c93ec93b')
+root = part('4f68bce3-e8cd-4db1-96e7-fbcaf984b709')
+verity = part('2c7357ed-ebd2-46d9-aec1-23d437ec2bf5')
+sector = table['sectorsize']
+uki = dist / 'hiro.efi'
+run('mcopy', '-o', '-i', f'{disk}@@{esp["start"] * sector}', '::/EFI/BOOT/BOOTX64.EFI', str(uki))
+for section in ['linux', 'initrd', 'cmdline']:
+    run('objcopy', '--dump-section', f'.{section}={dist / section}', str(uki))
+cmdline = (dist / 'cmdline').read_bytes().rstrip(b'\0').decode()
+hashes = re.findall(r'(?:^|\s)roothash=([0-9a-f]{64})(?=\s|$)', cmdline)
+require(len(hashes) == 1, 'UKI must embed exactly one dm-verity root hash')
+root_hash = hashes[0]
+with tempfile.TemporaryDirectory(prefix='hiro-verity-') as tmp:
+    for name, p in [('root', root), ('verity', verity)]:
+        run('dd', 'if=' + str(disk), 'of=' + tmp + '/' + name,
+            'bs=' + str(sector), 'skip=' + str(p['start']), 'count=' + str(p['size']), 'status=none')
+    run('veritysetup', 'verify', tmp + '/root', tmp + '/verity', root_hash)
+    # A mutation must be rejected, not silently accepted as a different root.
+    with open(tmp + '/root', 'r+b') as f:
+        original = f.read(1)
+        f.seek(0)
+        f.write(bytes([original[0] ^ 1]))
+    bad = subprocess.run(['veritysetup', 'verify', tmp + '/root', tmp + '/verity', root_hash],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    require(bad.returncode != 0, 'dm-verity accepted a modified filesystem')
+# Google raw disks must have a whole GiB size. Move the backup GPT after padding.
+gib = 1024 ** 3
+with disk.open('ab') as f:
+    f.truncate(((disk.stat().st_size + gib - 1) // gib) * gib)
+run('sgdisk', '--move-second-header', str(disk))
+run('qemu-img', 'info', '--output=json', str(disk), stdout=subprocess.DEVNULL)
+publish = dist / 'publish'
+publish.mkdir(exist_ok=True)
+archive = publish / 'hiro-gcp.tar.gz'
+# Sparse tar preserves the complete raw disk while avoiding giant zero-filled files.
+with archive.open('wb') as output:
+    tar = subprocess.Popen(['tar', '--format=oldgnu', '--sparse', '--mtime=@0', '--owner=0', '--group=0',
+                            '--numeric-owner', '--transform=s/hiro.raw/disk.raw/', '-C', str(disk.parent),
+                            '-c', 'hiro.raw'], stdout=subprocess.PIPE)
+    gzip = subprocess.run(['gzip', '-n'], stdin=tar.stdout, stdout=output)
+    tar.stdout.close()
+    require(tar.wait() == 0 and gzip.returncode == 0, 'image archive failed')
+release = json.loads((dist / 'release.json').read_text())
+manifest = {
+    'schema': 1, 'profile': 'hiro.gcp-tdx.boot.v1', 'source_commit': release['source_commit'],
+    'source_ref': os.environ.get('GITHUB_REF', 'refs/heads/main'),
+    'workflow_commit': os.environ.get('GITHUB_WORKFLOW_SHA', release['source_commit']),
+    'image_name': 'hiro-' + release['source_commit'],
+    'workload_release_sha256': digest(dist / 'release.json'),
+    'proxy': json.loads((dist / 'images.lock.json').read_text())['services']['hiro-proxy'],
+    'files': {'disk.raw': digest(disk), 'hiro-gcp.tar.gz': digest(archive),
+              'hiro.efi': digest(uki), 'linux': digest(dist / 'linux'), 'initrd': digest(dist / 'initrd')},
+    'boot': {'dm_verity_root_hash': root_hash, 'kernel_command_line': cmdline,
+             'secure_boot': False, 'firmware_measurements': 'verify from GCP TDX quote and CCEL'},
+    'application_rtmr3': (dist / 'rtmr3.txt').read_text().strip(),
+    'guest_os_features': ['TDX_CAPABLE', 'UEFI_COMPATIBLE', 'GVNIC', 'VIRTIO_SCSI_MULTIQUEUE'],
+    'dummy_application_credentials': True,
+}
+(publish / 'image-release.json').write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n')
+for name in ['release.json', 'images.lock.json', 'compose.yaml', 'rtmr3.txt', 'hiro.efi']:
+    shutil.copyfile(dist / name, publish / name)
+(publish / 'SHA256SUMS').write_text(''.join(f'{digest(p)}  {p.name}\n' for p in sorted(publish.iterdir()) if p.name != 'SHA256SUMS'))
+print('Validated and packaged ' + manifest['image_name'])

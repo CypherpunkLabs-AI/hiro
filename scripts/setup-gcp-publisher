@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""One-time setup in Google Cloud Shell; no local Google login is required."""
+import argparse
+import json
+import subprocess
+import urllib.request
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--project', required=True)
+parser.add_argument('--bucket', required=True)
+args = parser.parse_args()
+repository = 'CypherpunkLabs-AI/hiro'
+pool = 'hiro-image-publisher'
+provider = 'github-main'
+account = 'hiro-image-publisher@' + args.project + '.iam.gserviceaccount.com'
+def run(*cmd):
+    subprocess.run(cmd, check=True)
+def data(*cmd):
+    return json.loads(subprocess.check_output(cmd))
+project = data('gcloud', 'projects', 'describe', args.project, '--format=json')
+number = project['projectNumber']
+with urllib.request.urlopen('https://api.github.com/repos/' + repository, timeout=30) as response:
+    repo = json.load(response)
+run('gcloud', 'services', 'enable', 'compute.googleapis.com', 'storage.googleapis.com',
+    'iam.googleapis.com', 'iamcredentials.googleapis.com', 'sts.googleapis.com', '--project=' + args.project)
+run('gcloud', 'iam', 'service-accounts', 'create', 'hiro-image-publisher', '--project=' + args.project)
+run('gcloud', 'iam', 'workload-identity-pools', 'create', pool, '--location=global', '--project=' + args.project)
+condition = (f"assertion.repository_id == '{repo['id']}' && assertion.ref == 'refs/heads/main' && "
+             f"assertion.workflow_ref == '{repository}/.github/workflows/publish-release.yml@refs/heads/main'")
+run('gcloud', 'iam', 'workload-identity-pools', 'providers', 'create-oidc', provider,
+    '--project=' + args.project, '--location=global', '--workload-identity-pool=' + pool,
+    '--issuer-uri=https://token.actions.githubusercontent.com',
+    '--attribute-mapping=google.subject=assertion.sub,attribute.repository_id=assertion.repository_id',
+    '--attribute-condition=' + condition)
+principal = f'principalSet://iam.googleapis.com/projects/{number}/locations/global/workloadIdentityPools/{pool}/attribute.repository_id/{repo["id"]}'
+run('gcloud', 'iam', 'service-accounts', 'add-iam-policy-binding', account,
+    '--project=' + args.project, '--role=roles/iam.workloadIdentityUser', '--member=' + principal)
+run('gcloud', 'iam', 'roles', 'create', 'hiroImagePublisher', '--project=' + args.project,
+    '--title=Hiro image publisher', '--stage=GA',
+    '--permissions=compute.images.create,compute.images.get,compute.images.setLabels,compute.globalOperations.get,compute.projects.get,serviceusage.services.use')
+run('gcloud', 'projects', 'add-iam-policy-binding', args.project, '--member=serviceAccount:' + account,
+    '--role=projects/' + args.project + '/roles/hiroImagePublisher', '--condition=None')
+run('gcloud', 'storage', 'buckets', 'create', 'gs://' + args.bucket, '--project=' + args.project,
+    '--location=US-CENTRAL1', '--uniform-bucket-level-access', '--public-access-prevention')
+for role in ['roles/storage.objectCreator', 'roles/storage.objectViewer']:
+    run('gcloud', 'storage', 'buckets', 'add-iam-policy-binding', 'gs://' + args.bucket,
+        '--member=serviceAccount:' + account, '--role=' + role)
+variables = {
+    'GCP_PROJECT_ID': args.project, 'GCP_IMAGE_BUCKET': args.bucket,
+    'GCP_IMAGE_PUBLISHER': account,
+    'GCP_WORKLOAD_IDENTITY_PROVIDER': f'projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{provider}',
+}
+print('\nAdd these repository Actions variables at https://github.com/' + repository + '/settings/variables/actions')
+print(json.dumps(variables, indent=2))
+print('These are public identifiers, not credentials. This identity cannot create VM instances.')

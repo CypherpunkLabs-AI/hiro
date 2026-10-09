@@ -17,7 +17,7 @@ services:
       RUST_LOG: hiro_proxy=info
     volumes:
       - type: bind
-        source: /sys/kernel/config/tsm/report/hiro-proxy
+        source: /run/hiro/tdx-report
         target: /run/hiro/tdx-report
         bind:
           create_host_path: false

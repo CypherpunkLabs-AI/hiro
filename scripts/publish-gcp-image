@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Upload a signed release and register a GCP image. Never create a VM."""
+import hashlib
+import json
+import os
+import re
+import subprocess
+from hiro import ROOT, require
+
+def run(*args, **kw):
+    return subprocess.run(args, check=True, **kw)
+
+project = os.environ['GCP_PROJECT_ID']
+bucket = os.environ['GCP_IMAGE_BUCKET']
+require(re.fullmatch(r'[a-z][a-z0-9-]{4,61}[a-z0-9]', project), 'Invalid GCP project')
+require(re.fullmatch(r'[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]', bucket), 'Use a bucket name without gs://')
+directory = ROOT / 'dist/publish'
+manifest = json.loads((directory / 'image-release.json').read_text())
+commit = manifest['source_commit']
+require(commit == os.environ['GITHUB_SHA'], 'Image must belong to this workflow commit')
+name = manifest['image_name']
+require(name == 'hiro-' + commit, 'Unexpected image name')
+archive = directory / 'hiro-gcp.tar.gz'
+with archive.open('rb') as f:
+    require(hashlib.file_digest(f, 'sha256').hexdigest() == manifest['files'][archive.name], 'Archive changed after signing')
+prefix = f'gs://{bucket}/hiro/{commit}'
+run('gcloud', 'storage', 'cp', '--if-generation-match=0', str(archive), prefix + '/' + archive.name)
+for path in sorted(directory.iterdir()):
+    if path != archive and path.is_file():
+        run('gcloud', 'storage', 'cp', '--if-generation-match=0', str(path), prefix + '/' + path.name)
+run('gcloud', 'compute', 'images', 'create', name, '--project=' + project,
+    '--source-uri=' + prefix + '/' + archive.name,
+    '--guest-os-features=' + ','.join(manifest['guest_os_features']),
+    '--description=Hiro immutable release ' + commit,
+    '--labels=application=hiro,source-commit=' + commit,
+    '--storage-location=us', '--quiet')
+image = json.loads(subprocess.check_output(['gcloud', 'compute', 'images', 'describe', name,
+                    '--project=' + project, '--format=json']))
+require(image['status'] == 'READY', 'GCP image is not READY')
+require(set(manifest['guest_os_features']) <= {x['type'] for x in image['guestOsFeatures']}, 'GCP image lost required features')
+record = {'project': project, 'image': name, 'image_id': image['id'], 'self_link': image['selfLink'],
+          'release': prefix, 'status': image['status'], 'hardware_boot_verified': False}
+(directory / 'gcp-image.json').write_text(json.dumps(record, indent=2) + '\n')
+with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+    summary.write(f'## Registered boot image\n\nProject: `{project}`\n\nImage: `{name}`\n\n')
+    summary.write('Select **Compute Engine → Create instance → Boot disk → Custom images**, then this image.\n\n')
+    summary.write('Use Intel TDX, a supported C3 machine/zone, and Secure Boot disabled for this measured UKI profile. '
+                  'The embedded proxy starts automatically on port 8080. Allow its traffic with your VM firewall. '
+                  'Application credentials are public dummy values.\n\n')
+    summary.write('The build passed a UEFI startup test. Verify the live TDX quote after creating the VM.\n')
+print(json.dumps(record))

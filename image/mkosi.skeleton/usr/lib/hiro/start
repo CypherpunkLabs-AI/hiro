@@ -1,0 +1,100 @@
+#!/usr/bin/python3
+"""Start only the immutable embedded release; never accept metadata commands."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+ROOT = Path('/usr/lib/hiro')
+REPORT = Path('/sys/kernel/config/tsm/report/hiro-proxy')
+
+
+def run(*args, **kw):
+    return subprocess.run(args, check=True, **kw)
+
+
+def quote():
+    (REPORT / 'inblob').write_bytes(os.urandom(64))
+    raw = (REPORT / 'outblob').read_bytes()
+    # TDX quote v4, TDREPORT10. Unsupported formats fail closed.
+    if len(raw) < 632 or raw[:2] != b'\x04\x00' or raw[4:8] != b'\x81\x00\x00\x00':
+        raise ValueError('unsupported TDX quote')
+    if raw[168] & 1:
+        raise ValueError('debug TDX guest')
+    return raw[520:568]
+
+
+def main():
+    release_bytes = (ROOT / 'release.json').read_bytes()
+    release = json.loads(release_bytes)
+    for file, key in [('compose.yaml', 'compose_sha256'), ('images.lock.json', 'image_lock_sha256')]:
+        if hashlib.sha256((ROOT / file).read_bytes()).hexdigest() != release[key]:
+            raise ValueError('embedded release mismatch: ' + file)
+    assets = json.loads((ROOT / 'assets.json').read_text())
+    for name, expected in assets.items():
+        h = hashlib.sha256()
+        with (ROOT / name).open('rb') as f:
+            for block in iter(lambda: f.read(1024 * 1024), b''):
+                h.update(block)
+        if h.hexdigest() != expected:
+            raise ValueError('embedded asset mismatch: ' + name)
+    run('modprobe', 'configfs')
+    if not os.path.ismount('/sys/kernel/config'):
+        run('mount', '-t', 'configfs', 'configfs', '/sys/kernel/config')
+    subprocess.run(['modprobe', 'tdx_guest'], check=False)
+    evidence = Path('/run/hiro/attestation')
+    evidence.mkdir(parents=True, exist_ok=True, mode=0o755)
+    os.chmod(evidence.parent, 0o755)
+    os.chmod(evidence, 0o755)
+    report_mount = evidence.parent / 'tdx-report'
+    report_mount.mkdir(exist_ok=True, mode=0o755)
+    shutil.copyfile(ROOT / 'release.json', evidence / 'release.json')
+    os.chmod(evidence / 'release.json', 0o444)
+    if Path('/sys/firmware/acpi/tables/CCEL').exists():
+        REPORT.mkdir(exist_ok=True)
+        if (REPORT / 'provider').read_text().strip() != 'tdx_guest':
+            raise ValueError('TDX provider unavailable')
+        event = b'hiro.release.v1\0' + release_bytes
+        expected = hashlib.sha384(bytes(48) + hashlib.sha384(event).digest()).digest()
+        current = quote()
+        if current == bytes(48):
+            run(str(ROOT / 'tdx-extend'), '-rtmr=3', input=event)
+        elif current != expected:
+            raise ValueError('RTMR3 already contains a different release; boot a new VM')
+        if quote() != expected:
+            raise ValueError('RTMR3 extension failed')
+        shutil.copyfile('/sys/firmware/acpi/tables/data/CCEL', evidence / 'ccel.bin')
+        os.chmod(evidence / 'ccel.bin', 0o444)
+        for name in ['inblob', 'outblob', 'generation', 'provider']:
+            os.chown(REPORT / name, 65532, 65532)
+        os.chmod(REPORT, 0o755)
+        if not os.path.ismount(report_mount):
+            run('mount', '--bind', str(REPORT), str(report_mount))
+    else:
+        # Ordinary UEFI CI boot exercises process startup. Evidence remains
+        # unavailable; the proxy rejects /ready and /v1/attestation itself.
+        print('No TDX: starting with attestation unavailable', flush=True)
+    run('docker', 'load', '--input', str(ROOT / 'proxy.tar'))
+    image_id = (ROOT / 'proxy-image-id').read_text().strip()
+    config = json.loads(subprocess.check_output(['docker', 'image', 'inspect', image_id]))[0]
+    if config['Id'] != image_id:
+        raise ValueError('loaded container identity mismatch')
+    # docker save/load does not preserve registry RepoDigests. Use the exact
+    # content-addressed config ID recorded at build time, never a tag or pull.
+    override = {'services': {'hiro-proxy': {'image': image_id, 'pull_policy': 'never'}}}
+    (evidence.parent / 'container.json').write_text(json.dumps(override))
+    run('docker', 'compose', '--project-name', 'hiro', '--env-file', str(ROOT / 'runtime.env'),
+        '-f', str(ROOT / 'compose.yaml'), '-f', str(evidence.parent / 'container.json'),
+        'up', '-d', '--pull', 'never', '--no-build')
+    print('Hiro embedded release started', flush=True)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        print('Hiro startup failed: ' + str(error), file=sys.stderr)
+        sys.exit(1)

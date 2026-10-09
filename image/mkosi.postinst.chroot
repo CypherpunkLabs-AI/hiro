@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+systemctl enable systemd-networkd systemd-resolved systemd-timesyncd docker hiro
+systemctl mask ssh.service ssh.socket sshd.service serial-getty@ttyS0.service \
+  getty@tty1.service debug-shell.service emergency.service rescue.service \
+  cloud-init.service cloud-final.service google-startup-scripts.service \
+  google-guest-agent.service apt-daily.service apt-daily-upgrade.service
+passwd --lock root
+truncate --size 0 /etc/machine-id
+mkdir -p /var/lib/dbus
+ln -sf /etc/machine-id /var/lib/dbus/machine-id
+ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+# Refuse an image missing either TDX evidence support or its embedded release.
+grep -q '^CONFIG_INTEL_TDX_GUEST=y' /boot/config-*
+grep -Eq '^CONFIG_TDX_GUEST_DRIVER=[ym]' /boot/config-*
+test -s /usr/lib/hiro/release.json
+test -s /usr/lib/hiro/proxy.tar
+test -x /usr/lib/hiro/tdx-extend
+chown -R root:root /usr/lib/hiro
