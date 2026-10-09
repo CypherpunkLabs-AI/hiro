@@ -9,7 +9,8 @@ passwd --lock root
 truncate --size 0 /etc/machine-id
 mkdir -p /var/lib/dbus
 ln -sf /etc/machine-id /var/lib/dbus/machine-id
-ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+# mkosi bind-mounts the builder's resolver during chroot scripts. Set the
+# guest resolver in mkosi.finalize after leaving that mount namespace.
 # Refuse an image missing either TDX evidence support or its embedded release.
 grep -q '^CONFIG_INTEL_TDX_GUEST=y' /boot/config-*
 grep -Eq '^CONFIG_TDX_GUEST_DRIVER=[ym]' /boot/config-*
