@@ -1,20 +1,20 @@
 {
-  "schema": 1,
   "policy_id": "hiro",
-  "service": "hiro",
-  "policy_ref": "refs/heads/main",
   "policy_publisher": {
-    "repository": "CypherpunkLabs-AI/hiro",
     "owner_id": 325408208,
+    "repository": "CypherpunkLabs-AI/hiro",
     "repository_id": 1411129710,
     "workflow": ".github/workflows/policy.yml",
-    "workflow_commit": null
+    "workflow_commit": "faa4a7f1f91ea91c3e6cf4dbc530f33779db4b59"
   },
+  "policy_ref": "refs/heads/main",
   "release_publisher": {
-    "repository": "CypherpunkLabs-AI/hiro",
     "owner_id": 325408208,
+    "repository": "CypherpunkLabs-AI/hiro",
     "repository_id": 1411129710,
     "workflow": ".github/workflows/release.yml",
-    "workflow_commit": null
-  }
+    "workflow_commit": "faa4a7f1f91ea91c3e6cf4dbc530f33779db4b59"
+  },
+  "schema": 1,
+  "service": "hiro"
 }

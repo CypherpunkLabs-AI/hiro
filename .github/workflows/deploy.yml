@@ -38,7 +38,7 @@ on:
         type: boolean
         default: false
       proxy_run:
-        description: Successful proxy CI run ID; empty selects latest successful main push
+        description: Optional successful proxy CI run to check against the committed image lock
         required: false
         type: string
       os_image:
@@ -106,14 +106,16 @@ jobs:
           python3 -m venv .venv
           .venv/bin/python -m pip install -r scripts/requirements.txt
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-      - name: Import and verify published proxy image
+      - name: Verify the committed proxy image and provenance
         env:
           GH_TOKEN: ${{ github.token }}
           PROXY_RUN: ${{ inputs.proxy_run }}
         run: |
-          arguments=()
-          if [[ -n "$PROXY_RUN" ]]; then arguments+=(--run "$PROXY_RUN"); fi
-          scripts/import-proxy-image "${arguments[@]}"
+          if [[ -n "$PROXY_RUN" ]]; then
+            scripts/import-proxy-image --run "$PROXY_RUN" --check
+          else
+            scripts/verify-images
+          fi
       - name: Retrieve public Phala metadata
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
@@ -156,6 +158,10 @@ jobs:
             --instance-type "$INSTANCE_TYPE" --region "$REGION" --cli-version "$CLI_VERSION")
           if [[ -n "$CVM_ID" ]]; then arguments+=(--cvm-id "$CVM_ID"); fi
           scripts/deploy "${arguments[@]}"
+      - name: Capture workload evidence for independent platform approval
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: python3 scripts/capture-platform
       - name: Preserve public Phala metadata
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -166,6 +172,7 @@ jobs:
             dist/deployment.json
             dist/app-compose.json
             dist/compose.yaml
+            dist/platform-evidence.json
             images.lock.json
           if-no-files-found: ignore
           retention-days: 30

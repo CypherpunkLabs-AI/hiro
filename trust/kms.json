@@ -1,4 +1,14 @@
 {
-  "schema": 1,
-  "kms": []
+  "kms": [
+    {
+      "app_id": "5070b43503b10a3b061ca1c1e73a0565d424cdbc",
+      "ca_public_key_sha256": "3b9af543b721799280ba3f05cef2a93aee3d99e49ea8f6f5716536db87b8e7f3",
+      "compose_sha256": "5070b43503b10a3b061ca1c1e73a0565d424cdbcff368d40a8ba30747066efd2",
+      "endpoint": "https://kms.dstack-pha-prod10.phala.network",
+      "id": "phala-cloud-prod10-20261009",
+      "platform_id": "phala-prod10-tdx-20261009",
+      "root_public_key": "0334c76e0c3f52ec64cbf9bbf5c910c272330166fd656c0a86bb330963e46910e1"
+    }
+  ],
+  "schema": 1
 }

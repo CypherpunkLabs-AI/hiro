@@ -1,0 +1,40 @@
+name: Publish measured release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      deployment_run:
+        description: Successful deployment run for this exact tag commit
+        required: true
+        type: string
+      sequence:
+        description: Monotonically increasing release sequence
+        required: true
+        type: string
+      platform_id:
+        required: true
+        type: string
+      kms_id:
+        required: true
+        type: string
+      lifetime_seconds:
+        required: true
+        type: string
+        default: '604800'
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  packages: read
+jobs:
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    uses: CypherpunkLabs-AI/hiro/.github/workflows/release.yml@faa4a7f1f91ea91c3e6cf4dbc530f33779db4b59
+    with:
+      signer_commit: faa4a7f1f91ea91c3e6cf4dbc530f33779db4b59
+      deployment_run: ${{ inputs.deployment_run }}
+      sequence: ${{ inputs.sequence }}
+      platform_id: ${{ inputs.platform_id }}
+      kms_id: ${{ inputs.kms_id }}
+      lifetime_seconds: ${{ inputs.lifetime_seconds }}
