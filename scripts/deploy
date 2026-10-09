@@ -17,6 +17,13 @@ import yaml
 from hiro import ROOT, matches, rendered, require, write
 
 
+def verify_cli_version(reported, expected):
+    # Phala prints v<package-version>+<build-commit>, not bare semver.
+    version = re.fullmatch(r"v?(\d+\.\d+\.\d+)(?:\+[0-9a-f]{7,40})?", reported.strip())
+    require(version is not None and version.group(1) == expected,
+            f"installed Phala CLI differs from --cli-version: {reported[:100]!r}")
+
+
 def capture_composition(cvm_id, compose):
     """Preserve Phala's exact measured JSON; never reserialize before hashing."""
     for attempt in range(12):
@@ -72,8 +79,7 @@ def main():
     subprocess.run(["docker", "compose", "--env-file", str(env_file), "-f", str(output),
                     "config", "--quiet"], check=True, cwd=ROOT)
     version = subprocess.check_output(["phala", "--version"], text=True).strip()
-    require(args.cli_version in re.findall(r"(?<![\w.])\d+\.\d+\.\d+(?![\w.-])", version),
-            "installed Phala CLI differs from --cli-version")
+    verify_cli_version(version, args.cli_version)
     project = tomllib.loads((ROOT / "phala.toml").read_text())
     cvm_id = args.cvm_id or project.get("cvm_id")
     require(cvm_id is None or matches(cvm_id, r"[A-Za-z0-9_-]{1,128}"), "invalid configured CVM ID")
