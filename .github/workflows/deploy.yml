@@ -22,7 +22,7 @@ on:
         type: string
     secrets:
       PHALA_CLOUD_API_KEY:
-        required: false
+        required: true
       HIRO_RUNTIME_ENV:
         required: false
   workflow_dispatch:
