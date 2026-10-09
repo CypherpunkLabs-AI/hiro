@@ -3,7 +3,6 @@
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,6 +37,10 @@ def find_deployment(repository, commit, requested):
     return max(candidates, key=lambda run: run["id"])
 
 
+def verify_deployment_lock(captured, expected):
+    require(captured == expected, "deployed image lock differs from the tagged source's immutable image pins")
+
+
 def main():
     repository, _, _ = identity("release")
     ref = os.environ["GITHUB_REF"]
@@ -61,12 +64,7 @@ def main():
         captured = deployment_files(Path(directory))
         lock = json.loads(captured["lock"].read_bytes())
         expected = read("images.lock.json")
-        require(set(lock["services"]) == set(expected["services"]), "deployment services changed")
-        for name, image in lock["services"].items():
-            require(image["image"] == expected["services"][name]["image"]
-                    and image["source_repository"] == expected["services"][name]["source_repository"],
-                    "deployment image identity changed")
-        shutil.copyfile(captured["lock"], ROOT / "images.lock.json")
+        verify_deployment_lock(lock, expected)
         subprocess.run([sys.executable, str(Path(__file__).with_name("verify-images"))], check=True)
         deployment = json.loads(captured["deployment"].read_bytes())
         subprocess.run([sys.executable, str(Path(__file__).with_name("hiro.py")), "prepare-release",

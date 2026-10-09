@@ -27,6 +27,16 @@ policy = load('policy', 'prepare-published-policy.py')
 
 
 class PublicationTests(unittest.TestCase):
+    def test_release_rejects_another_build_from_the_same_publisher(self):
+        image = {'image': 'ghcr.io/owner/proxy', 'digest': 'sha256:' + 'a' * 64,
+                 'source_repository': 'owner/proxy', 'source_commit': 'b' * 40}
+        expected = {'schema': 1, 'services': {'hiro-proxy': image}}
+        prepare.verify_deployment_lock(json.loads(json.dumps(expected)), expected)
+        for field, value in (('digest', 'sha256:' + 'c' * 64), ('source_commit', 'd' * 40)):
+            captured = {'schema': 1, 'services': {'hiro-proxy': dict(image, **{field: value})}}
+            with self.assertRaisesRegex(ValueError, 'immutable image pins'):
+                prepare.verify_deployment_lock(captured, expected)
+
     def test_tag_release_discovers_only_a_successful_deployment_of_that_commit(self):
         good = {'id': 11, 'head_sha': 'a' * 40, 'head_branch': 'main',
                 'status': 'completed', 'conclusion': 'success', 'path': '.github/workflows/deploy.yml'}

@@ -31,6 +31,7 @@ def verify(subject, repository, commit, bundle=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=int, help="successful proxy Actions run ID; defaults to latest successful main push")
+    parser.add_argument("--check", action="store_true", help="require the published image to equal the committed lock without changing it")
     args = parser.parse_args()
     lock = read("images.lock.json")
     expected = lock["services"]["hiro-proxy"]
@@ -67,7 +68,12 @@ def main():
                 and image["source_ref"] == "refs/heads/main"
                 and image["build_workflow"] == ".github/workflows/ci.yml", "published build identity mismatch")
         require(matches(image["digest"], r"sha256:[0-9a-f]{64}"), "invalid OCI digest")
+        if args.check:
+            require(image == expected, "published image differs from the committed lock; import and commit it before deployment")
         verify("oci://" + image["image"] + "@" + image["digest"], repository, commit)
+        if args.check:
+            print("Published image and provenance match the committed lock.")
+            return
         lock["services"]["hiro-proxy"] = image
         # Both the metadata artifact and OCI provenance have now been verified.
         temporary = ROOT / "images.lock.json.tmp"
