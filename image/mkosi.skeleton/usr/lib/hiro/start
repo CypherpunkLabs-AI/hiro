@@ -41,6 +41,10 @@ def main():
                 h.update(block)
         if h.hexdigest() != expected:
             raise ValueError('embedded asset mismatch: ' + name)
+    # Exercise the helper on ordinary CI boots too. Existence/executable-bit
+    # checks cannot detect a missing ELF interpreter in the guest filesystem.
+    run(str(ROOT / 'tdx-extend'), '-help', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print('TDX measurement helper executable verified', flush=True)
     run('modprobe', 'configfs')
     if not os.path.ismount('/sys/kernel/config'):
         run('mount', '-t', 'configfs', 'configfs', '/sys/kernel/config')

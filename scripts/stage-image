@@ -32,9 +32,17 @@ if len(revision) != 40 or any(c not in '0123456789abcdef' for c in revision):
     raise SystemExit('Invalid TDX tools revision')
 tools = ROOT / 'dist/tools'
 tools.mkdir(parents=True, exist_ok=True)
-env = dict(os.environ, GOBIN=str(tools), CGO_ENABLED='0')
-run('go', 'install', 'github.com/google/go-tdx-guest/tools/extend@' + revision, env=env)
-run('go', 'install', 'github.com/google/go-tdx-guest/tools/check@' + revision, env=env)
+env = dict(os.environ, GOBIN=str(tools), CGO_ENABLED='0', GOOS='linux', GOARCH='amd64',
+           GOFLAGS='', GOTOOLCHAIN='local')
+# Nix Go defaults to PIE, which can retain a /nix/store ELF interpreter even
+# with CGO disabled. These tools must execute in the independent Ubuntu guest.
+for name in ['extend', 'check']:
+    run('go', 'install', '-trimpath', '-buildmode=exe', '-ldflags=-linkmode=internal',
+        'github.com/google/go-tdx-guest/tools/' + name + '@' + revision, env=env)
+    headers = subprocess.check_output(['readelf', '--program-headers', '--wide', str(tools / name)],
+                                      text=True)
+    if any(line.split() and line.split()[0] in ('INTERP', 'DYNAMIC') for line in headers.splitlines()):
+        raise SystemExit('TDX helper must be statically linked: ' + name)
 shutil.copyfile(tools / 'extend', dest / 'tdx-extend')
 os.chmod(dest / 'tdx-extend', 0o755)
 assets = {}
