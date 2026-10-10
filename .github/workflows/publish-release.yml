@@ -31,7 +31,7 @@ jobs:
       # Import this TLS-capable proxy, never an older successful publishing run.
       PROXY_COMMIT: 45c9589ed965f8c179c4ba686cc5a82bca329daf
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Authenticate Google image publisher before building
