@@ -28,6 +28,9 @@ def quote():
 
 
 def main():
+    run('swapoff', '--all')
+    if any(line.strip() for line in Path('/proc/swaps').read_text().splitlines()[1:]):
+        raise ValueError('swap must be disabled before starting Hiro')
     release_bytes = (ROOT / 'release.json').read_bytes()
     release = json.loads(release_bytes)
     for file, key in [('compose.yaml', 'compose_sha256'), ('images.lock.json', 'image_lock_sha256')]:
@@ -53,6 +56,14 @@ def main():
     evidence.mkdir(parents=True, exist_ok=True, mode=0o755)
     os.chmod(evidence.parent, 0o755)
     os.chmod(evidence, 0o755)
+    # Host tmpfs survives container restarts; VM shutdown destroys all TLS state.
+    # noswap also prevents tmpfs private-key pages from reaching a swap device.
+    tls_cache = evidence.parent / 'tls'
+    tls_cache.mkdir(exist_ok=True, mode=0o700)
+    if not os.path.ismount(tls_cache):
+        run('mount', '-t', 'tmpfs', '-o',
+            'noswap,nosuid,nodev,noexec,size=4M,mode=0700,uid=65532,gid=65532',
+            'tmpfs', str(tls_cache))
     report_mount = evidence.parent / 'tdx-report'
     report_mount.mkdir(exist_ok=True, mode=0o755)
     shutil.copyfile(ROOT / 'release.json', evidence / 'release.json')
@@ -90,7 +101,9 @@ def main():
     # content-addressed config ID recorded at build time, never a tag or pull.
     override = {'services': {'hiro-proxy': {'image': image_id, 'pull_policy': 'never'}}}
     (evidence.parent / 'container.json').write_text(json.dumps(override))
-    run('docker', 'compose', '--project-name', 'hiro', '--env-file', str(ROOT / 'runtime.env'),
+    # The service env_file reads /mnt/config/secrets.env. Disable automatic
+    # .env loading so deployment secrets never participate in YAML interpolation.
+    run('docker', 'compose', '--project-name', 'hiro', '--env-file', '/dev/null',
         '-f', str(ROOT / 'compose.yaml'), '-f', str(evidence.parent / 'container.json'),
         'up', '-d', '--pull', 'never', '--no-build')
     print('Hiro embedded release started', flush=True)

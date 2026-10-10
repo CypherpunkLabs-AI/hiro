@@ -63,7 +63,7 @@ def rendered():
         service["image"] = entry["image"] + "@" + entry["digest"]
     proxy = lock["services"]["hiro-proxy"]
     policy = read("runtime-policy.json")
-    allowed = {"AUTH_ISSUER", "AUTH_AUTHORIZED_PARTIES", "AUTH_JWKS_URL", "AUTH_AUDIENCE",
+    allowed = {"HIRO_TLS_DOMAIN", "HIRO_ACME_ENVIRONMENT", "AUTH_ISSUER", "AUTH_AUTHORIZED_PARTIES", "AUTH_JWKS_URL", "AUTH_AUDIENCE",
                "PHALA_ACI_BASE_URL", "PHALA_ACI_ACCEPTED_SUBJECTS", "PHALA_ACI_ACCEPTED_KMS_ROOT_KEYS",
                "PHALA_ACI_PCCS_URL", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_USAGE_QUEUE_ID", "INFERENCE_SYSTEM_PROMPT"}
     require(set(policy) == allowed and all(isinstance(v, str) and v for v in policy.values()),

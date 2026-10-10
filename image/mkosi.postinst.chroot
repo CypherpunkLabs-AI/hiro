@@ -4,10 +4,11 @@ systemctl enable systemd-networkd systemd-resolved systemd-timesyncd docker hiro
 systemctl mask ssh.service ssh.socket sshd.service serial-getty@ttyS0.service \
   getty@tty1.service debug-shell.service emergency.service rescue.service \
   cloud-init.service cloud-final.service google-startup-scripts.service \
-  google-guest-agent.service apt-daily.service apt-daily-upgrade.service
+  google-guest-agent.service apt-daily.service apt-daily-upgrade.service swap.target
 passwd --lock root
 truncate --size 0 /etc/machine-id
 mkdir -p /var/lib/dbus
+install -d -m 0700 /mnt/config
 ln -sf /etc/machine-id /var/lib/dbus/machine-id
 # mkosi bind-mounts the builder's resolver during chroot scripts. Set the
 # guest resolver in mkosi.finalize after leaving that mount namespace.
@@ -17,4 +18,5 @@ grep -Eq '^CONFIG_TDX_GUEST_DRIVER=[ym]' /boot/config-*
 test -s /usr/lib/hiro/release.json
 test -s /usr/lib/hiro/proxy.tar
 test -x /usr/lib/hiro/tdx-extend
+test ! -e /usr/lib/hiro/runtime.env
 chown -R root:root /usr/lib/hiro

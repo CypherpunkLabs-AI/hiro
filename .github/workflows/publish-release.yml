@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       proxy_run:
-        description: Successful proxy main publishing run (empty uses latest)
+        description: Successful publishing run for the pinned proxy commit (empty waits for it)
         type: string
 permissions:
   contents: write
@@ -28,6 +28,8 @@ jobs:
       GCP_IMAGE_PUBLISHER: ${{ vars.GCP_IMAGE_PUBLISHER || 'hiro-image-publisher@cypherpunklabs.iam.gserviceaccount.com' }}
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || 'projects/1069855069526/locations/global/workloadIdentityPools/hiro-image-publisher/providers/github-main' }}
       GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+      # Import this TLS-capable proxy, never an older successful publishing run.
+      PROXY_COMMIT: 45c9589ed965f8c179c4ba686cc5a82bca329daf
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
         with:
@@ -56,9 +58,9 @@ jobs:
           PROXY_RUN: ${{ inputs.proxy_run }}
         run: |
           if [[ -n "$PROXY_RUN" ]]; then
-            scripts/import-proxy-image --run "$PROXY_RUN"
+            scripts/import-proxy-image --run "$PROXY_RUN" --commit "$PROXY_COMMIT"
           else
-            scripts/import-proxy-image
+            scripts/import-proxy-image --commit "$PROXY_COMMIT" --wait 2700
           fi
           scripts/verify-images
           scripts/prepare-release --source-commit "$GITHUB_SHA" --tag "v0.1.0-sha.$GITHUB_SHA"
@@ -94,7 +96,7 @@ jobs:
           done
           gh release create "image-$GITHUB_SHA" dist/publish/* --target "$GITHUB_SHA" \
             --title "Hiro boot image $GITHUB_SHA" --prerelease \
-            --notes 'Complete immutable OS and embedded proxy. Public dummy application credentials. See image-release.json and boot-check.json.'
+            --notes 'Complete immutable OS and embedded proxy. Requires a separate hiro-config disk containing secrets.env. No application credentials are embedded. See image-release.json and boot-check.json.'
       - name: Require GCP image publication configuration
         run: |
           for name in GCP_PROJECT_ID GCP_IMAGE_BUCKET GCP_IMAGE_PUBLISHER GCP_WORKLOAD_IDENTITY_PROVIDER; do

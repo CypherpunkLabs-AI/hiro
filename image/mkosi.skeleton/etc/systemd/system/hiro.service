@@ -1,12 +1,15 @@
 [Unit]
 Description=Embedded Hiro confidential proxy
 Requires=docker.service
+RequiresMountsFor=/mnt/config
 After=docker.service network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=/usr/bin/test -s /mnt/config/secrets.env
+ExecStartPre=/usr/bin/test -r /mnt/config/secrets.env
 ExecStart=/usr/lib/hiro/start
 StandardOutput=journal+console
 StandardError=journal+console

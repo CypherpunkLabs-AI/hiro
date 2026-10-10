@@ -1,4 +1,6 @@
 {
+  "HIRO_TLS_DOMAIN": "api.cypherpunklabs.io",
+  "HIRO_ACME_ENVIRONMENT": "production",
   "AUTH_ISSUER": "https://auth.invalid",
   "AUTH_AUTHORIZED_PARTIES": "https://app.invalid",
   "AUTH_JWKS_URL": "https://auth.invalid/.well-known/jwks.json",

@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Boot the release disk under UEFI; missing TDX must never attest."""
+"""Boot the release disk under UEFI and check the TLS-only listener without public ACME issuance."""
 import argparse
 import json
 import os
 from pathlib import Path
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.request
 from hiro import ROOT, require
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -20,14 +19,20 @@ args = parser.parse_args()
 dist = ROOT / 'dist'
 dist.mkdir(exist_ok=True)
 log_path = dist / ('boot-preflight.log' if args.preflight else 'boot.log')
+tls_domain = json.loads((ROOT / 'runtime-policy.json').read_text())['HIRO_TLS_DOMAIN']
 
 
-def status(port, path):
+def tls_alert(port, version):
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = context.maximum_version = version
     try:
-        with urllib.request.urlopen(f'http://127.0.0.1:{port}' + path, timeout=3) as response:
-            return response.status
-    except urllib.error.HTTPError as error:
-        return error.code
+        with socket.create_connection(('127.0.0.1', port), timeout=3) as tcp:
+            with context.wrap_socket(tcp, server_hostname=tls_domain):
+                raise ValueError('Offline CI guest unexpectedly presented a TLS certificate')
+    except ssl.SSLError as error:
+        return error.reason
 
 
 def boot():
@@ -45,7 +50,8 @@ def boot():
         command = ['qemu-system-x86_64', '-machine', 'q35', '-m', '6144', '-smp', '2',
                    '-drive', f'if=pflash,format=raw,unit=0,readonly=on,file={code}',
                    '-drive', f'if=pflash,format=raw,unit=1,file={variables}',
-                   '-netdev', f'user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:8080',
+                   # Prevent CI from placing orders against the production CA.
+                   '-netdev', f'user,id=net0,restrict=on,hostfwd=tcp:127.0.0.1:{port}-:443',
                    '-device', 'virtio-net-pci,netdev=net0',
                    '-display', 'none', '-monitor', 'none', '-no-reboot']
         if os.access('/dev/kvm', os.R_OK | os.W_OK):
@@ -55,7 +61,20 @@ def boot():
         if args.preflight:
             command += ['-S', '-serial', 'none', '-qmp', 'stdio']
         else:
+            # Exercise the same required configuration disk as deployment.
+            # This temporary disk contains public fixtures and is never published.
+            config_root = Path(tmp) / 'config'
+            config_root.mkdir(mode=0o700)
+            secrets = config_root / 'secrets.env'
+            shutil.copyfile(ROOT / '.env.example', secrets)
+            secrets.chmod(0o600)
+            config_disk = Path(tmp) / 'config.raw'
+            with config_disk.open('wb') as disk:
+                disk.truncate(64 * 1024 * 1024)
+            subprocess.run(['mkfs.ext4', '-q', '-F', '-L', 'hiro-config',
+                            '-d', str(config_root), str(config_disk)], check=True)
             command += ['-drive', f'file={dist}/image/hiro.raw,format=raw,if=virtio,snapshot=on',
+                        '-drive', f'file={config_disk},format=raw,if=virtio,readonly=on',
                         '-serial', 'stdio']
         with log_path.open('wb') as log:
             vm = subprocess.Popen(command, stderr=log,
@@ -77,22 +96,30 @@ def boot():
                 while time.monotonic() < deadline:
                     require(vm.poll() is None, f'UEFI guest exited with status {vm.returncode}')
                     try:
-                        if status(port, '/health') == 200:
+                        if tls_alert(port, ssl.TLSVersion.TLSv1_2) == 'TLSV1_ALERT_PROTOCOL_VERSION':
                             break
                     except (OSError, TimeoutError):
                         pass
                     time.sleep(3)
                 else:
                     raise ValueError('Embedded proxy did not start within 7 minutes')
-                require(status(port, '/ready') == 503, 'Non-TDX VM unexpectedly became attestation-ready')
-                require(status(port, '/v1/attestation?nonce=' + '01' * 32) == 503, 'Non-TDX VM supplied accepted evidence')
-                require(status(port, '/v3/chat/completions') == 404, 'Plaintext application route exposed')
+                require(tls_alert(port, ssl.TLSVersion.TLSv1_3) == 'TLSV1_ALERT_ACCESS_DENIED',
+                        'TLS 1.3 must fail closed while certificate issuance is unavailable')
+                with socket.create_connection(('127.0.0.1', port), timeout=3) as tcp:
+                    tcp.sendall(f'GET /health HTTP/1.1\r\nHost: {tls_domain}\r\n\r\n'.encode())
+                    try:
+                        require(not tcp.recv(4096).startswith(b'HTTP/'), 'Plaintext HTTP listener exposed')
+                    except ConnectionResetError:
+                        pass
                 (dist / 'boot-check.json').write_text(json.dumps({
-                    'uefi_boot': 'passed', 'embedded_proxy_health': 200,
-                    'non_tdx_ready': 503, 'non_tdx_attestation': 503,
+                    'uefi_boot': 'passed', 'embedded_proxy_tls_listener': 'passed',
+                    'configuration': 'separate hiro-config disk with public dummy credentials',
+                    'tls12': 'rejected', 'tls13_without_certificate': 'rejected',
+                    'plaintext_http': 'rejected',
+                    'certificate_issuance': 'not exercised; CI outbound network is blocked',
                     'hardware_attestation': 'requires deployment on Intel TDX',
                 }, indent=2) + '\n')
-                print('UEFI boot and embedded proxy startup passed; non-TDX evidence correctly rejected')
+                print('UEFI boot passed; TLS listener rejects TLS 1.2, plaintext and missing certificates')
             finally:
                 if vm.poll() is None:
                     vm.terminate()

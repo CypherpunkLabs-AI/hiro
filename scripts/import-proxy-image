@@ -6,11 +6,29 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 from hiro import ROOT, PROFILE, matches, read, require, write
 
 
 def gh_json(*arguments):
     return json.loads(subprocess.check_output(["gh", *arguments], text=True))
+
+
+def publishing_run(repository, commit, wait_seconds):
+    deadline = time.monotonic() + wait_seconds
+    query = f"repos/{repository}/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha={commit}&per_page=1"
+    while True:
+        runs = gh_json("api", query)["workflow_runs"]
+        if runs:
+            run = runs[0]
+            require(run["head_sha"] == commit, "proxy run does not match the required commit")
+            if run["status"] == "completed":
+                require(run["conclusion"] == "success", f"proxy CI failed: {run['html_url']}")
+                return run["id"]
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, f"no successful proxy publishing run for {commit} within the wait limit")
+        print(f"Waiting for proxy commit {commit} to finish publishing", flush=True)
+        time.sleep(min(20, remaining))
 
 
 def verify(subject, repository, commit, ref, bundle=None):
@@ -28,8 +46,15 @@ def main():
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--run", type=int, help="successful main-branch CI run; defaults to latest")
     source.add_argument("--release", help="published version, e.g. v0.1.0")
+    parser.add_argument("--commit", help="require this exact proxy source commit")
+    parser.add_argument("--wait", type=int, default=0, metavar="SECONDS",
+                        help="wait for the required commit's publishing run")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
+    require(args.commit is None or matches(args.commit, r"[0-9a-f]{40}"), "invalid required proxy commit")
+    require(0 <= args.wait <= 3600, "wait must be between 0 and 3600 seconds")
+    require(not args.wait or (args.commit and args.run is None and args.release is None),
+            "--wait requires --commit without --run or --release")
     lock = read("images.lock.json")
     expected = lock["services"]["hiro-proxy"]
     repository = expected["source_repository"]
@@ -46,18 +71,23 @@ def main():
                             "--pattern", "images.lock*", "--dir", directory], check=True)
         else:
             if args.run is None:
-                runs = gh_json("api", f"repos/{repository}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1")["workflow_runs"]
-                require(bool(runs), "no successful proxy publishing run")
-                args.run = runs[0]["id"]
+                if args.commit:
+                    args.run = publishing_run(repository, args.commit, args.wait)
+                else:
+                    runs = gh_json("api", f"repos/{repository}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1")["workflow_runs"]
+                    require(bool(runs), "no successful proxy publishing run")
+                    args.run = runs[0]["id"]
             require(args.run > 0, "invalid run ID")
             run = gh_json("api", f"repos/{repository}/actions/runs/{args.run}")
             require(run["status"] == "completed" and run["conclusion"] == "success", "proxy CI must succeed")
             require(run["event"] == "push" and run["head_branch"] == "main" and run["path"] == ".github/workflows/ci.yml", "unexpected publishing workflow")
             require(run["repository"]["full_name"].lower() == repository.lower(), "unexpected repository")
             commit, ref = run["head_sha"], "refs/heads/main"
+            require(args.commit is None or commit == args.commit, "proxy run does not match the required commit")
             subprocess.run(["gh", "run", "download", str(args.run), "--repo", repository, "--name",
                             f"hiro-proxy-image-{commit}-{run['run_attempt']}", "--dir", directory], check=True)
         require(matches(commit, r"[0-9a-f]{40}"), "invalid source revision")
+        require(args.commit is None or commit == args.commit, "proxy release does not match the required commit")
         verify(str(path / "images.lock.json"), repository, commit, ref, path / "images.lock.sigstore.json")
         published = json.loads((path / "images.lock.json").read_text())
         require(published.get("schema") == 1 and set(published["services"]) == {"hiro-proxy"}, "unexpected image lock")

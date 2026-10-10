@@ -86,7 +86,9 @@ manifest = {
     'application_rtmr3': (dist / 'rtmr3.txt').read_text().strip(),
     'guest_os_features': ['TDX_CAPABLE', 'UEFI_COMPATIBLE', 'GVNIC', 'VIRTIO_SCSI_MULTIQUEUE'],
     'licenses': ['https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/licenses/ubuntu-2604-lts'],
-    'dummy_application_credentials': True,
+    'embedded_application_credentials': False,
+    'runtime_configuration': {'filesystem_label': 'hiro-config',
+                              'env_file': '/mnt/config/secrets.env', 'required': True},
 }
 (publish / 'image-release.json').write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n')
 for name in ['release.json', 'images.lock.json', 'compose.yaml', 'rtmr3.txt', 'hiro.efi']:

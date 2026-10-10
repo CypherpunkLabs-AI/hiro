@@ -18,6 +18,8 @@ entry = lock['services']['hiro-proxy']
 reference = entry['image'] + '@' + entry['digest']
 dest = ROOT / 'image/mkosi.extra/usr/lib/hiro'
 dest.mkdir(parents=True, exist_ok=True)
+# Remove the old embedded credentials file when reusing a local staging tree.
+(dest / 'runtime.env').unlink(missing_ok=True)
 run('docker', 'pull', '--platform=linux/amd64', reference)
 info = json.loads(subprocess.check_output(['docker', 'image', 'inspect', reference]))[0]
 if reference not in info.get('RepoDigests', []) or info['Architecture'] != 'amd64':
@@ -26,7 +28,6 @@ run('docker', 'save', '--output', str(dest / 'proxy.tar'), reference)
 (dest / 'proxy-image-id').write_text(info['Id'] + '\n')
 for name in ['release.json', 'compose.yaml', 'images.lock.json']:
     shutil.copyfile(ROOT / 'dist' / name, dest / name)
-shutil.copyfile(ROOT / '.env.example', dest / 'runtime.env')
 revision = (ROOT / 'image/tdx-tools-revision').read_text().strip()
 if len(revision) != 40 or any(c not in '0123456789abcdef' for c in revision):
     raise SystemExit('Invalid TDX tools revision')

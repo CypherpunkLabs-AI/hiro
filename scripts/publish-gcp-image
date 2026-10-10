@@ -47,7 +47,7 @@ with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
     summary.write(f'## Registered boot image\n\nProject: `{project}`\n\nImage: `{name}`\n\n')
     summary.write('Select **Compute Engine → Create instance → Boot disk → Custom images**, then this image.\n\n')
     summary.write('Use Intel TDX, a supported C3 machine/zone, and Secure Boot disabled for this measured UKI profile. '
-                  'The embedded proxy starts automatically on port 8080. Allow its traffic with your VM firewall. '
-                  'Application credentials are public dummy values.\n\n')
+                  'The embedded proxy serves HTTPS/WSS on port 443 after ACME issuance. Allow TCP 443 and point the configured DNS hostname directly at this VM. Attach the hiro-config disk before boot. '
+                  'Application credentials are supplied by the separate configuration disk.\n\n')
     summary.write('The build passed a UEFI startup test. Verify the live TDX quote after creating the VM.\n')
 print(json.dumps(record))
